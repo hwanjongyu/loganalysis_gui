@@ -1,8 +1,11 @@
 import sys
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTextEdit, QAction, QFileDialog, QStatusBar,
-    QVBoxLayout, QWidget, QMenuBar, QDialog, QLineEdit, QCheckBox, QComboBox, QPushButton, QLabel, QHBoxLayout, QListWidget, QSplitter, QProgressDialog, QListWidgetItem, QTabWidget
+    QVBoxLayout, QWidget, QMenuBar, QDialog, QLineEdit, QCheckBox, QComboBox, 
+    QPushButton, QLabel, QHBoxLayout, QListWidget, QSplitter, QProgressDialog, 
+    QListWidgetItem, QTabWidget
 )
+from PyQt5.QtGui import QColor, QTextCursor, QIntValidator
 from PyQt5.QtGui import QColor, QTextCursor
 from PyQt5.QtCore import Qt
 
@@ -109,9 +112,63 @@ class LogAnalysisMainWindow(QMainWindow):
         self.prev_btn = QPushButton("Previous")
         self.next_btn.clicked.connect(self.next_page)
         self.prev_btn.clicked.connect(self.prev_page)
+        
+        # Initialize navigation buttons as disabled
+        self.prev_btn.setEnabled(False)
+        self.next_btn.setEnabled(False)
+        
+                # Style for navigation buttons
+        nav_button_style = """
+            QPushButton {
+                min-width: 100px;
+                font-weight: bold;
+            }
+        """
+        
+        # Create and style navigation buttons
+        self.prev_btn.setStyleSheet(nav_button_style)
+        self.next_btn.setStyleSheet(nav_button_style)
+        
+        # Create page navigation widgets
+        page_container = QWidget()
+        page_layout = QHBoxLayout()
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create editable page number field with styling
+        self.page_edit = QLineEdit()
+        self.page_edit.setAlignment(Qt.AlignCenter)
+        self.page_edit.setFixedWidth(60)
+        self.page_edit.setStyleSheet("""
+            QLineEdit {
+                padding: 5px;
+                font-size: 14px;
+                border: 1px solid #ccc;
+                border-radius: 3px;
+            }
+        """)
+        self.page_edit.setValidator(QIntValidator(1, 999999))
+        self.page_edit.returnPressed.connect(self.handle_page_edit)
+        
+        # Create total pages label with styling
+        self.total_pages_label = QLabel()
+        
+        # Add widgets with center alignment
+        page_layout.addStretch()
+        page_layout.addWidget(self.page_edit)
+        page_layout.addWidget(self.total_pages_label)
+        page_layout.addStretch()
+        
+        page_container.setLayout(page_layout)
+        self.update_page_label()  # Initialize the page display and button states
+        
         nav_layout = QHBoxLayout()
+        nav_layout.addSpacing(10)  # Add some padding
         nav_layout.addWidget(self.prev_btn)
+        nav_layout.addStretch()  # Center the page navigation
+        nav_layout.addWidget(page_container)
+        nav_layout.addStretch()  # Center the page navigation
         nav_layout.addWidget(self.next_btn)
+        nav_layout.addSpacing(10)  # Add some padding
 
         # Filter tab widget at the bottom (no add/delete tab buttons)
         self.filter_tabs = QTabWidget()
@@ -199,6 +256,52 @@ class LogAnalysisMainWindow(QMainWindow):
         self.show_only_filtered = checked
         self.apply_filters()  # Refresh the display
         
+    def update_page_label(self):
+        """Update the page indicator and navigation buttons."""
+        if self.total_lines == 0:
+            self.page_edit.setText("")
+            self.page_edit.setEnabled(False)
+            self.total_pages_label.setText("of 0")
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
+            return
+            
+        total_pages = (self.total_lines + self.lines_per_page - 1) // self.lines_per_page
+        current_page = self.current_page + 1  # Convert to 1-based page number
+        
+        # Update the page number field without triggering signals
+        self.page_edit.blockSignals(True)
+        self.page_edit.setText(str(current_page))
+        self.page_edit.blockSignals(False)
+        
+        # Update total pages
+        self.total_pages_label.setText(f"of {total_pages}")
+        
+        # Enable/disable page edit
+        self.page_edit.setEnabled(True)
+        self.page_edit.setValidator(QIntValidator(1, total_pages))
+        
+        # Update button states
+        self.prev_btn.setEnabled(self.current_page > 0)
+        self.next_btn.setEnabled((self.current_page + 1) * self.lines_per_page < self.total_lines)
+    
+    def handle_page_edit(self):
+        """Handle page number changes from user input."""
+        try:
+            new_page = int(self.page_edit.text()) - 1  # Convert to 0-based index
+            total_pages = (self.total_lines + self.lines_per_page - 1) // self.lines_per_page
+            
+            if 0 <= new_page < total_pages:
+                self.current_page = new_page
+                self.update_page_label()
+                self.apply_filters()
+            else:
+                # If invalid, reset to current page
+                self.update_page_label()
+        except ValueError:
+            # If invalid input, reset to current page
+            self.update_page_label()
+        
     def apply_filter_colors(self, item, filter_data):
         """Apply background and text colors to a list item."""
         bg_color = filter_data.get("bg_color", "None")
@@ -224,6 +327,7 @@ class LogAnalysisMainWindow(QMainWindow):
             self.status_bar.showMessage("Indexing file for fast loading...")
             self.prepare_file_offsets(file_path)
             self.status_bar.showMessage("Loading first page...")
+            self.update_page_label()  # Update page indicator
             self.load_page()
             self.status_bar.showMessage(f"Loaded: {file_path}")
 
@@ -287,11 +391,13 @@ class LogAnalysisMainWindow(QMainWindow):
     def next_page(self):
         if (self.current_page + 1) * self.lines_per_page < self.total_lines:
             self.current_page += 1
+            self.update_page_label()  # Update page indicator and button states
             self.apply_filters()
 
     def prev_page(self):
         if self.current_page > 0:
             self.current_page -= 1
+            self.update_page_label()  # Update page indicator and button states
             self.apply_filters()
 
     def add_filter_dialog(self):
