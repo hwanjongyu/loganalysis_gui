@@ -19,11 +19,14 @@ class LogAnalysisMainWindow(QMainWindow):
         self.filter_tabs = QTabWidget()
         self.filter_tab_lists = []  # List of QListWidget, one per tab
         self.filters = []  # List of filter lists, one per tab
+        self.show_line_numbers = True  # Track line number visibility
         self.create_menu()
         self.init_ui()
 
     def create_menu(self):
         menubar = self.menuBar()
+
+        # File menu
         file_menu = menubar.addMenu("File")
         open_action = QAction("Open", self)
         open_action.setShortcut("Ctrl+O")
@@ -41,11 +44,28 @@ class LogAnalysisMainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        # Edit menu
         edit_menu = menubar.addMenu("Edit")
         add_filter_action = QAction("Add Filter", self)
         add_filter_action.setShortcut("Ctrl+F")
         add_filter_action.triggered.connect(self.add_filter_dialog)
         edit_menu.addAction(add_filter_action)
+
+        # View menu
+        view_menu = menubar.addMenu("View")
+        show_line_numbers_action = QAction("Show Line Numbers", self, checkable=True)
+        show_line_numbers_action.setChecked(True)
+        show_line_numbers_action.triggered.connect(self.toggle_line_numbers)
+        view_menu.addAction(show_line_numbers_action)
+        view_menu.addSeparator()
+        next_page_action = QAction("Next Page", self)
+        next_page_action.setShortcut("Ctrl+N")
+        next_page_action.triggered.connect(self.next_page)
+        view_menu.addAction(next_page_action)
+        prev_page_action = QAction("Previous Page", self)
+        prev_page_action.setShortcut("Ctrl+P")
+        prev_page_action.triggered.connect(self.prev_page)
+        view_menu.addAction(prev_page_action)
 
         # Tabs menu
         tabs_menu = menubar.addMenu("Tabs")
@@ -162,6 +182,11 @@ class LogAnalysisMainWindow(QMainWindow):
         if filter_data["case_sensitive"]:
             text = f"CASE: {text}"
         return text
+        
+    def toggle_line_numbers(self, checked):
+        """Toggle the visibility of line numbers."""
+        self.show_line_numbers = checked
+        self.apply_filters()  # Refresh the display
         
     def apply_filter_colors(self, item, filter_data):
         """Apply background and text colors to a list item."""
@@ -418,8 +443,12 @@ class LogAnalysisMainWindow(QMainWindow):
                     decoded = line.decode('utf-8', errors='replace').rstrip()
                 except Exception as e:
                     decoded = f"[Decode error: {e}]"
+                cell_style = "white-space:pre;font-family:monospace;font-size:12px;"
                 if not all_active_filters:
-                    rows.append(f"<tr><td style='{td_style}'>{i+1}</td><td style='white-space:pre;font-family:monospace;font-size:12px;'>{decoded}</td></tr>")
+                    if self.show_line_numbers:
+                        rows.append(f"<tr><td style='{td_style}'>{i+1}</td><td style='{cell_style}'>{decoded}</td></tr>")
+                    else:
+                        rows.append(f"<tr><td style='{cell_style};padding-left:0'>{decoded}</td></tr>")
                 else:
                     matched = False
                     last_color = None
@@ -457,9 +486,18 @@ class LogAnalysisMainWindow(QMainWindow):
                             style += f"background-color:{color_map.get(last_color, last_color)};"
                         if last_text_color and last_text_color != "None":
                             style += f"color:{text_color_map.get(last_text_color, last_text_color)};"
-                        rows.append(f"<tr><td style='{td_style}'>{i+1}</td><td style='{style}'>{decoded}</td></tr>")
+                        if not self.show_line_numbers:
+                            style += "padding-left:0;"
+                        if self.show_line_numbers:
+                            rows.append(f"<tr><td style='{td_style}'>{i+1}</td><td style='{style}'>{decoded}</td></tr>")
+                        else:
+                            rows.append(f"<tr><td style='{style}'>{decoded}</td></tr>")
         if rows:
-            html = "<table style='font-family:monospace;font-size:12px;table-layout:fixed;width:100%;border-collapse:collapse;'><tbody>" + ''.join(rows) + "</tbody></table>"
+            table_style = "font-family:monospace;font-size:12px;table-layout:fixed;width:100%;border-collapse:collapse;"
+            container_style = "margin:0;padding:0;"
+            if not self.show_line_numbers:
+                container_style = "margin:0;padding:0 10px;"  # Add padding when line numbers are hidden
+            html = f"<div style='{container_style}'><table style='{table_style}'><tbody>" + ''.join(rows) + "</tbody></table></div>"
             self.text_edit.setHtml(html)
         else:
             self.text_edit.setHtml("<i>No lines matched the filter.</i>")
