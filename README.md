@@ -25,7 +25,7 @@ This project would not exist without the inspiration from [TestAnalysisTool](htt
 ## Requirements
 
 * Python 3.8 or newer
-* Tkinter (usually included with Python)
+* PyQt5
 
 ## Installation
 

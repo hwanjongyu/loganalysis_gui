@@ -130,9 +130,9 @@ class LogAnalysisMainWindow(QMainWindow):
         new_filters = []
         for i in range(filter_list.count()):
             item = filter_list.item(i)
-            # Find the filter dict that matches this item's text
+            # Find the filter dict that matches this item's display text
             for f in filters:
-                if str(f) == item.text():
+                if self.format_filter_display(f) == item.text():
                     new_filters.append(f)
                     break
         if len(new_filters) == len(filters):
@@ -151,6 +151,29 @@ class LogAnalysisMainWindow(QMainWindow):
     def current_filter_list(self):
         idx = self.filter_tabs.currentIndex()
         return self.filter_tab_lists[idx], self.filters[idx]
+        
+    def format_filter_display(self, filter_data):
+        """Format the filter text for display in the list."""
+        text = filter_data["text"]
+        if filter_data["exclude"]:
+            text = f"NOT: {text}"
+        if filter_data["regex"]:
+            text = f"REGEX: {text}"
+        if filter_data["case_sensitive"]:
+            text = f"CASE: {text}"
+        return text
+        
+    def apply_filter_colors(self, item, filter_data):
+        """Apply background and text colors to a list item."""
+        bg_color = filter_data.get("bg_color", "None")
+        text_color = filter_data.get("text_color", "None")
+        
+        if bg_color != "None":
+            item.setBackground(QColor(bg_color))
+        if text_color != "None":
+            item.setForeground(QColor(text_color))
+        
+        item.setData(Qt.UserRole, filter_data)  # Store filter data for later use
 
     def open_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -241,8 +264,9 @@ class LogAnalysisMainWindow(QMainWindow):
         if dialog.exec_():
             filter_data = dialog.get_filter_data()
             filter_data["active"] = True
-            item = QListWidgetItem(str(filter_data))
+            item = QListWidgetItem(self.format_filter_display(filter_data))
             item.setCheckState(Qt.Checked)
+            self.apply_filter_colors(item, filter_data)
             filter_list.addItem(item)
             filters.append(filter_data)
             self.apply_filters()
@@ -256,7 +280,8 @@ class LogAnalysisMainWindow(QMainWindow):
             new_filter_data = dialog.get_filter_data()
             new_filter_data["active"] = item.checkState() == Qt.Checked
             filters[idx] = new_filter_data
-            item.setText(str(new_filter_data))
+            item.setText(self.format_filter_display(new_filter_data))
+            self.apply_filter_colors(item, new_filter_data)
             self.apply_filters()
 
     def eventFilter(self, source, event):
@@ -323,8 +348,9 @@ class LogAnalysisMainWindow(QMainWindow):
                     # Single filter set (legacy or empty)
                     loaded_set = loaded
                 for filter_data in loaded_set:
-                    item = QListWidgetItem(str(filter_data))
+                    item = QListWidgetItem(self.format_filter_display(filter_data))
                     item.setCheckState(Qt.Checked if filter_data.get("active", True) else Qt.Unchecked)
+                    self.apply_filter_colors(item, filter_data)
                     filter_list.addItem(item)
                     filters.append(filter_data)
                 self.apply_filters()
