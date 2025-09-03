@@ -20,6 +20,7 @@ class LogAnalysisMainWindow(QMainWindow):
         self.filter_tab_lists = []  # List of QListWidget, one per tab
         self.filters = []  # List of filter lists, one per tab
         self.show_line_numbers = True  # Track line number visibility
+        self.show_only_filtered = True  # Track filter-only visibility
         self.create_menu()
         self.init_ui()
 
@@ -53,6 +54,11 @@ class LogAnalysisMainWindow(QMainWindow):
 
         # View menu
         view_menu = menubar.addMenu("View")
+        show_only_filtered_action = QAction("Show Only Filtered Lines", self, checkable=True)
+        show_only_filtered_action.setChecked(True)
+        show_only_filtered_action.setShortcut("Ctrl+H")
+        show_only_filtered_action.triggered.connect(self.toggle_show_only_filtered)
+        view_menu.addAction(show_only_filtered_action)
         show_line_numbers_action = QAction("Show Line Numbers", self, checkable=True)
         show_line_numbers_action.setChecked(True)
         show_line_numbers_action.triggered.connect(self.toggle_line_numbers)
@@ -186,6 +192,11 @@ class LogAnalysisMainWindow(QMainWindow):
     def toggle_line_numbers(self, checked):
         """Toggle the visibility of line numbers."""
         self.show_line_numbers = checked
+        self.apply_filters()  # Refresh the display
+
+    def toggle_show_only_filtered(self, checked):
+        """Toggle showing only filtered lines."""
+        self.show_only_filtered = checked
         self.apply_filters()  # Refresh the display
         
     def apply_filter_colors(self, item, filter_data):
@@ -445,10 +456,11 @@ class LogAnalysisMainWindow(QMainWindow):
                     decoded = f"[Decode error: {e}]"
                 cell_style = "white-space:pre;font-family:monospace;font-size:12px;"
                 if not all_active_filters:
+                    style = cell_style
                     if self.show_line_numbers:
-                        rows.append(f"<tr><td style='{td_style}'>{i+1}</td><td style='{cell_style}'>{decoded}</td></tr>")
+                        rows.append(f"<tr><td style='{td_style}'>{i+1}</td><td style='{style}'>{decoded}</td></tr>")
                     else:
-                        rows.append(f"<tr><td style='{cell_style};padding-left:0'>{decoded}</td></tr>")
+                        rows.append(f"<tr><td style='{style};padding-left:0'>{decoded}</td></tr>")
                 else:
                     matched = False
                     last_color = None
@@ -480,12 +492,20 @@ class LogAnalysisMainWindow(QMainWindow):
                                 matched = True
                                 last_color = ftr["bg_color"]
                                 last_text_color = ftr.get("text_color", "None")
-                    if matched:
+                    # Handle both matched and unmatched lines
+                    if matched or not self.show_only_filtered:
                         style = "white-space:pre;font-family:monospace;font-size:12px;"
-                        if last_color and last_color != "None":
-                            style += f"background-color:{color_map.get(last_color, last_color)};"
-                        if last_text_color and last_text_color != "None":
-                            style += f"color:{text_color_map.get(last_text_color, last_text_color)};"
+                        
+                        if matched:
+                            # Apply filter colors for matched lines
+                            if last_color and last_color != "None":
+                                style += f"background-color:{color_map.get(last_color, last_color)};"
+                            if last_text_color and last_text_color != "None":
+                                style += f"color:{text_color_map.get(last_text_color, last_text_color)};"
+                        else:
+                            # Gray color for unmatched lines
+                            style += "color:#808080;"
+                            
                         if not self.show_line_numbers:
                             style += "padding-left:0;"
                         if self.show_line_numbers:
