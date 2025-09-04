@@ -6,7 +6,6 @@ from PyQt5.QtWidgets import (
     QListWidgetItem, QTabWidget
 )
 from PyQt5.QtGui import QColor, QTextCursor, QIntValidator
-from PyQt5.QtGui import QColor, QTextCursor
 from PyQt5.QtCore import Qt
 
 class LogAnalysisMainWindow(QMainWindow):
@@ -171,7 +170,6 @@ class LogAnalysisMainWindow(QMainWindow):
         nav_layout.addSpacing(10)  # Add some padding
 
         # Filter tab widget at the bottom (no add/delete tab buttons)
-        self.filter_tabs = QTabWidget()
         self.filter_tab_lists = []
         self.filters = []
         self.add_filter_tab()  # Start with one tab
@@ -406,11 +404,18 @@ class LogAnalysisMainWindow(QMainWindow):
         if dialog.exec_():
             filter_data = dialog.get_filter_data()
             filter_data["active"] = True
-            item = QListWidgetItem(self.format_filter_display(filter_data))
+            
+            # Create QListWidgetItem (text will be set by the custom widget)
+            item = QListWidgetItem()
             item.setCheckState(Qt.Checked)
-            self.apply_filter_colors(item, filter_data)
+            self.apply_filter_colors(item, filter_data) # Apply colors to the item itself
             filter_list.addItem(item)
             filters.append(filter_data)
+
+            # Create and set custom widget for the item
+            widget = FilterItemWidget(filter_data)
+            filter_list.setItemWidget(item, widget)
+            
             self.apply_filters()
 
     def edit_filter_dialog(self, item):
@@ -422,8 +427,15 @@ class LogAnalysisMainWindow(QMainWindow):
             new_filter_data = dialog.get_filter_data()
             new_filter_data["active"] = item.checkState() == Qt.Checked
             filters[idx] = new_filter_data
-            item.setText(self.format_filter_display(new_filter_data))
-            self.apply_filter_colors(item, new_filter_data)
+            # item.setText(self.format_filter_display(new_filter_data)) # No longer needed, widget handles text
+            self.apply_filter_colors(item, new_filter_data) # Apply colors to the item itself
+
+            # Update the custom widget
+            widget = filter_list.itemWidget(item)
+            if widget:
+                widget.filter_data = new_filter_data # Update data in the widget
+                widget.update_display()
+            
             self.apply_filters()
 
     def eventFilter(self, source, event):
@@ -490,11 +502,15 @@ class LogAnalysisMainWindow(QMainWindow):
                     # Single filter set (legacy or empty)
                     loaded_set = loaded
                 for filter_data in loaded_set:
-                    item = QListWidgetItem(self.format_filter_display(filter_data))
+                    item = QListWidgetItem() # Create empty item
                     item.setCheckState(Qt.Checked if filter_data.get("active", True) else Qt.Unchecked)
-                    self.apply_filter_colors(item, filter_data)
+                    self.apply_filter_colors(item, filter_data) # Apply colors to the item itself
                     filter_list.addItem(item)
                     filters.append(filter_data)
+                    
+                    # Create and set custom widget for the item
+                    widget = FilterItemWidget(filter_data)
+                    filter_list.setItemWidget(item, widget)
                 self.apply_filters()
                 self.status_bar.showMessage(f"Filters loaded to current tab from {file_path}")
             except Exception as e:
@@ -504,7 +520,10 @@ class LogAnalysisMainWindow(QMainWindow):
         # Combine all active filters from all tabs
         all_active_filters = []
         for filters in self.filters:
-            all_active_filters.extend([f for f in filters if f.get("active", True)])
+            for f in filters:
+                if f.get("active", True):
+                    f['total_matches'] = 0  # Initialize match count for each active filter
+                    all_active_filters.append(f)
         filter_list, filters = self.current_filter_list()
         if not self.current_file_path or not self.file_line_offsets or self.total_lines == 0:
             self.text_edit.clear()
@@ -598,6 +617,8 @@ class LogAnalysisMainWindow(QMainWindow):
                                 matched = True
                                 last_color = ftr["bg_color"]
                                 last_text_color = ftr.get("text_color", "None")
+                                # Count 1 for this line if a match is found, regardless of multiple occurrences within the line
+                                ftr['total_matches'] += 1
                     # Handle both matched and unmatched lines
                     if matched or not self.show_only_filtered:
                         style = "white-space:pre;font-family:monospace;font-size:12px;"
@@ -631,6 +652,52 @@ class LogAnalysisMainWindow(QMainWindow):
             self.status_bar.showMessage(f"No filters active. Showing original file.")
         else:
             self.status_bar.showMessage(f"Filtered: {len(rows)} lines, {len(all_active_filters)} active filters.")
+
+        # Update the display of filters in the QListWidget with their match counts
+        filter_list, filters = self.current_filter_list()
+        for i in range(filter_list.count()):
+            item = filter_list.item(i)
+            filter_data = filters[i] # Assuming filters list order matches QListWidget order
+            widget = filter_list.itemWidget(item)
+            if widget:
+                widget.filter_data = filter_data # Ensure widget has latest data
+                widget.update_display() # Refresh display
+
+class FilterItemWidget(QWidget):
+    def __init__(self, filter_data, parent=None):
+        super().__init__(parent)
+        self.filter_data = filter_data
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.text_label = QLabel()
+        self.count_label = QLabel()
+        
+        self.text_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.count_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        
+        layout.addWidget(self.text_label, 1)
+        layout.addWidget(self.count_label)
+        
+        self.update_display()
+
+    def update_display(self):
+        text = self.filter_data["text"]
+        if self.filter_data["exclude"]:
+            text = f"NOT: {text}"
+        if self.filter_data["regex"]:
+            text = f"REGEX: {text}"
+        if self.filter_data["case_sensitive"]:
+            text = f"CASE: {text}"
+        
+        self.text_label.setText(text)
+        
+        count = self.filter_data.get('total_matches', 0)
+        if count > 0:
+            self.count_label.setText(f"({count})")
+        else:
+            self.count_label.setText("") # Clear if no matches
 
 class FilterDialog(QDialog):
     def __init__(self, parent=None, filter_data=None):
