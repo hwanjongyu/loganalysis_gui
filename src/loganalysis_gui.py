@@ -211,14 +211,17 @@ class LogAnalysisMainWindow(QMainWindow):
         new_filters = []
         for i in range(filter_list.count()):
             item = filter_list.item(i)
-            # Find the filter dict that matches this item's display text
-            for f in filters:
-                if self.format_filter_display(f) == item.text():
-                    new_filters.append(f)
-                    break
+            # Retrieve the filter dict directly from the item's data
+            filter_data_from_item = item.data(Qt.UserRole)
+            if filter_data_from_item:
+                new_filters.append(filter_data_from_item)
         if len(new_filters) == len(filters):
             filters.clear()
             filters.extend(new_filters)
+            # Reapply colors to QListWidgetItems after reordering
+            for i in range(filter_list.count()):
+                item = filter_list.item(i)
+                self.apply_filter_colors(item, filters[i])
         self.apply_filters()
 
     def delete_filter_tab(self):
@@ -698,6 +701,34 @@ class FilterItemWidget(QWidget):
             self.count_label.setText(f"({count})")
         else:
             self.count_label.setText("") # Clear if no matches
+
+        # Apply colors to the text label
+        bg_color_name = self.filter_data.get("bg_color", "None")
+        text_color_name = self.filter_data.get("text_color", "None")
+
+        style_sheet = ""
+        if bg_color_name != "None":
+            # Use the same color map as in LogAnalysisMainWindow for consistency
+            color_map = {
+                "Khaki": "#F0E68C", "Yellow": "#FFFF00", "Cyan": "#00FFFF", "Green": "#90EE90",
+                "Red": "#FFB6B6", "Blue": "#B6D0FF", "Gray": "#D3D3D3", "White": "#FFFFFF",
+                "Orange": "#FFD580", "Purple": "#E6E6FA", "Brown": "#EEDFCC", "Pink": "#FFD1DC",
+                "Violet": "#F3E5F5", "Navy": "#B0C4DE", "Teal": "#B2DFDB", "Olive": "#F5F5DC",
+                "Maroon": "#F4CCCC"
+            }
+            style_sheet += f"background-color: {color_map.get(bg_color_name, bg_color_name)};"
+        
+        if text_color_name != "None":
+            # Use the same text color map as in LogAnalysisMainWindow for consistency
+            text_color_map = {
+                "Black": "#000000", "Red": "#FF0000", "Blue": "#0000FF", "Green": "#008000",
+                "Gray": "#808080", "White": "#FFFFFF", "Orange": "#FFA500", "Purple": "#800080",
+                "Brown": "#A52A2A", "Pink": "#FFC0CB", "Violet": "#EE82EE", "Navy": "#000080",
+                "Teal": "#008080", "Olive": "#808000", "Maroon": "#800000"
+            }
+            style_sheet += f"color: {text_color_map.get(text_color_name, text_color_name)};"
+        
+        self.text_label.setStyleSheet(style_sheet)
 
 class FilterDialog(QDialog):
     def __init__(self, parent=None, filter_data=None):
