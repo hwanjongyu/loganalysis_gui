@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QListWidgetItem, QTabWidget
 )
 from PyQt5.QtGui import QColor, QTextCursor, QIntValidator
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 
 class LogAnalysisMainWindow(QMainWindow):
     def __init__(self):
@@ -109,7 +109,7 @@ class LogAnalysisMainWindow(QMainWindow):
         from PyQt5.QtWidgets import QMessageBox
         QMessageBox.about(self, "About LogAnalysis GUI",
                           "<b>LogAnalysis GUI</b><br>"
-                          "Version 0.01<br>"
+                          "Version 0.0.1<br>"
                           "Developed by: Drew Yu<br>"
                           "Email: drew.developer@gmail.com<br><br>"
                           "A simple log analysis tool built with PyQt5."
@@ -213,7 +213,7 @@ class LogAnalysisMainWindow(QMainWindow):
         filter_list.setDragDropMode(QListWidget.InternalMove)  # Enable drag-and-drop reordering
         filter_list.itemDoubleClicked.connect(self.edit_filter_dialog)
         filter_list.installEventFilter(self)
-        filter_list.itemChanged.connect(self.toggle_filter_active)
+        # filter_list.itemChanged.connect(self.toggle_filter_active) # Removed, handled by custom widget
         filter_list.model().rowsMoved.connect(lambda: self.sync_filter_order())
         self.filter_tab_lists.append(filter_list)
         self.filters.append([])
@@ -237,6 +237,7 @@ class LogAnalysisMainWindow(QMainWindow):
             # Reapply colors to QListWidgetItems after reordering
             for i in range(filter_list.count()):
                 item = filter_list.item(i)
+                # No longer setting check state on QListWidgetItem, handled by custom widget
                 self.apply_filter_colors(item, filters[i])
         self.apply_filters()
 
@@ -422,20 +423,26 @@ class LogAnalysisMainWindow(QMainWindow):
         dialog = FilterDialog(self)
         if dialog.exec_():
             filter_data = dialog.get_filter_data()
-            filter_data["active"] = True
+            filter_data["active"] = True # Default to active when adding
             
-            # Create QListWidgetItem (text will be set by the custom widget)
+            # Create QListWidgetItem
             item = QListWidgetItem()
-            item.setCheckState(Qt.Checked)
+            # item.setCheckState(Qt.Checked) # No longer needed, handled by custom widget
             self.apply_filter_colors(item, filter_data) # Apply colors to the item itself
             filter_list.addItem(item)
             filters.append(filter_data)
 
             # Create and set custom widget for the item
             widget = FilterItemWidget(filter_data)
+            widget.filter_toggled.connect(self._on_filter_toggled) # Connect custom signal
             filter_list.setItemWidget(item, widget)
             
             self.apply_filters()
+
+    def _on_filter_toggled(self, filter_data, checked):
+        # This slot is called when a filter's checkbox is toggled
+        # The filter_data dict is already updated by FilterItemWidget
+        self.apply_filters()
 
     def edit_filter_dialog(self, item):
         filter_list, filters = self.current_filter_list()
@@ -444,13 +451,18 @@ class LogAnalysisMainWindow(QMainWindow):
         dialog = FilterDialog(self, filter_data)
         if dialog.exec_():
             new_filter_data = dialog.get_filter_data()
-            new_filter_data["active"] = item.checkState() == Qt.Checked
+            # The active state is now managed by the checkbox in FilterItemWidget
+            # So, we retrieve it from the existing item's widget if it exists
+            widget = filter_list.itemWidget(item)
+            if widget:
+                new_filter_data["active"] = widget.checkbox.isChecked()
+            else:
+                new_filter_data["active"] = filter_data.get("active", True) # Fallback
+
             filters[idx] = new_filter_data
-            # item.setText(self.format_filter_display(new_filter_data)) # No longer needed, widget handles text
             self.apply_filter_colors(item, new_filter_data) # Apply colors to the item itself
 
             # Update the custom widget
-            widget = filter_list.itemWidget(item)
             if widget:
                 widget.filter_data = new_filter_data # Update data in the widget
                 widget.update_display()
@@ -470,11 +482,11 @@ class LogAnalysisMainWindow(QMainWindow):
                 return True
         return super().eventFilter(source, event)
 
-    def toggle_filter_active(self, item):
-        filter_list, filters = self.current_filter_list()
-        idx = filter_list.row(item)
-        filters[idx]["active"] = item.checkState() == Qt.Checked
-        self.apply_filters()
+    # def toggle_filter_active(self, item): # Removed, handled by custom widget
+    #     filter_list, filters = self.current_filter_list()
+    #     idx = filter_list.row(item)
+    #     filters[idx]["active"] = item.checkState() == Qt.Checked
+    #     self.apply_filters()
 
     def save_filters(self):
         import json
@@ -522,13 +534,14 @@ class LogAnalysisMainWindow(QMainWindow):
                     loaded_set = loaded
                 for filter_data in loaded_set:
                     item = QListWidgetItem() # Create empty item
-                    item.setCheckState(Qt.Checked if filter_data.get("active", True) else Qt.Unchecked)
+                    # item.setCheckState(Qt.Checked if filter_data.get("active", True) else Qt.Unchecked) # No longer needed
                     self.apply_filter_colors(item, filter_data) # Apply colors to the item itself
                     filter_list.addItem(item)
                     filters.append(filter_data)
                     
                     # Create and set custom widget for the item
                     widget = FilterItemWidget(filter_data)
+                    widget.filter_toggled.connect(self._on_filter_toggled) # Connect custom signal
                     filter_list.setItemWidget(item, widget)
                 self.apply_filters()
                 self.status_bar.showMessage(f"Filters loaded to current tab from {file_path}")
@@ -680,9 +693,11 @@ class LogAnalysisMainWindow(QMainWindow):
             widget = filter_list.itemWidget(item)
             if widget:
                 widget.filter_data = filter_data # Ensure widget has latest data
-                widget.update_display() # Refresh display
+                widget.update_display()
 
 class FilterItemWidget(QWidget):
+    filter_toggled = pyqtSignal(dict, bool) # Custom signal to emit filter data and new state
+
     def __init__(self, filter_data, parent=None):
         super().__init__(parent)
         self.filter_data = filter_data
@@ -690,16 +705,168 @@ class FilterItemWidget(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(self.filter_data.get("active", True))
+        self.checkbox.toggled.connect(self._on_checkbox_toggled)
+
         self.text_label = QLabel()
         self.count_label = QLabel()
         
         self.text_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.count_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         
+        layout.addWidget(self.checkbox)
         layout.addWidget(self.text_label, 1)
         layout.addWidget(self.count_label)
         
         self.update_display()
+
+    def _on_checkbox_toggled(self, checked):
+        self.filter_data["active"] = checked
+        self.filter_toggled.emit(self.filter_data, checked)
+
+    def update_display(self):
+        text = self.filter_data["text"]
+        if self.filter_data["exclude"]:
+            text = f"NOT: {text}"
+        if self.filter_data["regex"]:
+            text = f"REGEX: {text}"
+        if self.filter_data["case_sensitive"]:
+            text = f"CASE: {text}"
+        
+        self.text_label.setText(text)
+        
+        count = self.filter_data.get('total_matches', 0)
+        if count > 0:
+            self.count_label.setText(f"({count})")
+        else:
+            self.count_label.setText("") # Clear if no matches
+
+        # Apply colors to the text label
+        bg_color_name = self.filter_data.get("bg_color", "None")
+        text_color_name = self.filter_data.get("text_color", "None")
+
+        style_sheet = ""
+        if bg_color_name != "None":
+            # Use the same color map as in LogAnalysisMainWindow for consistency
+            color_map = {
+                "Khaki": "#F0E68C", "Yellow": "#FFFF00", "Cyan": "#00FFFF", "Green": "#90EE90",
+                "Red": "#FFB6B6", "Blue": "#B6D0FF", "Gray": "#D3D3D3", "White": "#FFFFFF",
+                "Orange": "#FFD580", "Purple": "#E6E6FA", "Brown": "#EEDFCC", "Pink": "#FFD1DC",
+                "Violet": "#F3E5F5", "Navy": "#B0C4DE", "Teal": "#B2DFDB", "Olive": "#F5F5DC",
+                "Maroon": "#F4CCCC"
+            }
+            style_sheet += f"background-color: {color_map.get(bg_color_name, bg_color_name)};"
+        
+        if text_color_name != "None":
+            # Use the same text color map as in LogAnalysisMainWindow for consistency
+            text_color_map = {
+                "Black": "#000000", "Red": "#FF0000", "Blue": "#0000FF", "Green": "#008000",
+                "Gray": "#808080", "White": "#FFFFFF", "Orange": "#FFA500", "Purple": "#800080",
+                "Brown": "#A52A2A", "Pink": "#FFC0CB", "Violet": "#EE82EE", "Navy": "#000080",
+                "Teal": "#008080", "Olive": "#808000", "Maroon": "#800000"
+            }
+            style_sheet += f"color: {text_color_map.get(text_color_name, text_color_name)};"
+        
+        self.text_label.setStyleSheet(style_sheet)
+
+class FilterDialog(QDialog):
+    def __init__(self, parent=None, filter_data=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add Filter" if filter_data is None else "Edit Filter")
+        self.setModal(True)
+        self.text_input = QLineEdit()
+        self.case_sensitive = QCheckBox("Case-sensitive")
+        self.regex = QCheckBox("Regular expression")
+        self.exclude = QCheckBox("Excluding")
+        # More text and background colors
+        self.text_color = QComboBox()
+        self.text_color.addItems([
+            "None", "Black", "Red", "Blue", "Green", "Gray", "White", "Orange", "Purple", "Brown", "Pink", "Violet", "Navy", "Teal", "Olive", "Maroon"
+        ])
+        self.bg_color = QComboBox()
+        self.bg_color.addItems([
+            "None", "Khaki", "Yellow", "Cyan", "Green", "Red", "Blue", "Gray", "White", "Orange", "Purple", "Brown", "Pink", "Violet", "Navy", "Teal", "Olive", "Maroon"
+        ])
+        self.ok_btn = QPushButton("OK")
+        self.cancel_btn = QPushButton("Cancel")
+        self.ok_btn.clicked.connect(self.accept)
+        self.cancel_btn.clicked.connect(self.reject)
+        self.layout_ui()
+        if filter_data:
+            self.text_input.setText(filter_data["text"])
+            self.case_sensitive.setChecked(filter_data["case_sensitive"])
+            self.regex.setChecked(filter_data["regex"])
+            self.exclude.setChecked(filter_data["exclude"])
+            idx = self.bg_color.findText(filter_data["bg_color"])
+            if idx >= 0:
+                self.bg_color.setCurrentIndex(idx)
+            idx = self.text_color.findText(filter_data.get("text_color", "None"))
+            if idx >= 0:
+                self.text_color.setCurrentIndex(idx)
+
+    def layout_ui(self):
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Text:"))
+        layout.addWidget(self.text_input)
+        layout.addWidget(self.case_sensitive)
+        layout.addWidget(self.regex)
+        layout.addWidget(self.exclude)
+        layout.addWidget(QLabel("Text Color:"))
+        layout.addWidget(self.text_color)
+        layout.addWidget(QLabel("Background:"))
+        layout.addWidget(self.bg_color)
+        btn_layout = QHBoxLayout()
+        btn_layout.addWidget(self.ok_btn)
+        btn_layout.addWidget(self.cancel_btn)
+        layout.addLayout(btn_layout)
+        self.setLayout(layout)
+
+    def get_filter_data(self):
+        return {
+            "text": self.text_input.text(),
+            "case_sensitive": self.case_sensitive.isChecked(),
+            "regex": self.regex.isChecked(),
+            "exclude": self.exclude.isChecked(),
+            "bg_color": self.bg_color.currentText(),
+            "text_color": self.text_color.currentText()
+        }
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = LogAnalysisMainWindow()
+    window.show()
+    sys.exit(app.exec_()) # Refresh display
+
+class FilterItemWidget(QWidget):
+    filter_toggled = pyqtSignal(dict, bool) # Custom signal to emit filter data and new state
+
+    def __init__(self, filter_data, parent=None):
+        super().__init__(parent)
+        self.filter_data = filter_data
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(self.filter_data.get("active", True))
+        self.checkbox.toggled.connect(self._on_checkbox_toggled)
+
+        self.text_label = QLabel()
+        self.count_label = QLabel()
+        
+        self.text_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.count_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        
+        layout.addWidget(self.checkbox)
+        layout.addWidget(self.text_label, 1)
+        layout.addWidget(self.count_label)
+        
+        self.update_display()
+
+    def _on_checkbox_toggled(self, checked):
+        self.filter_data["active"] = checked
+        self.filter_toggled.emit(self.filter_data, checked)
 
     def update_display(self):
         text = self.filter_data["text"]
