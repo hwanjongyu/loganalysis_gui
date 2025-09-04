@@ -90,6 +90,12 @@ class LogAnalysisMainWindow(QMainWindow):
         rename_tab_action.triggered.connect(self.rename_filter_tab)
         tabs_menu.addAction(rename_tab_action)
 
+        # Help menu
+        help_menu = menubar.addMenu("Help")
+        about_action = QAction("About", self)
+        about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_action)
+
     def rename_filter_tab(self):
         idx = self.filter_tabs.currentIndex()
         if idx >= 0:
@@ -98,6 +104,16 @@ class LogAnalysisMainWindow(QMainWindow):
             new_name, ok = QInputDialog.getText(self, "Rename Tab", "Tab name:", text=current_name)
             if ok and new_name.strip():
                 self.filter_tabs.setTabText(idx, new_name.strip())
+
+    def show_about_dialog(self):
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.about(self, "About LogAnalysis GUI",
+                          "<b>LogAnalysis GUI</b><br>"
+                          "Version 0.01<br>"
+                          "Developed by: Drew Yu<br>"
+                          "Email: drew.developer@gmail.com<br><br>"
+                          "A simple log analysis tool built with PyQt5."
+                         )
 
     def init_ui(self):
         self.text_edit = QTextEdit()
