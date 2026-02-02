@@ -11,19 +11,25 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtCore import Qt, pyqtSignal, QAbstractListModel, QModelIndex, QThread, QSize, QMutex
 
-# Shared Color Maps - (Unchanged)
+# Shared Color Maps
 COLOR_MAP = {
-    "Khaki": "#F0E68C", "Yellow": "#FFFF00", "Cyan": "#00FFFF", "Green": "#90EE90",
-    "Red": "#FFB6B6", "Blue": "#B6D0FF", "Gray": "#D3D3D3", "White": "#FFFFFF",
-    "Orange": "#FFD580", "Purple": "#E6E6FA", "Brown": "#EEDFCC", "Pink": "#FFD1DC",
-    "Violet": "#F3E5F5", "Navy": "#B0C4DE", "Teal": "#B2DFDB", "Olive": "#F5F5DC",
-    "Maroon": "#F4CCCC"
+    "Khaki": "#F0E68C", "Yellow": "#FFFF00", "Gold": "#FFD700", "Cyan": "#00FFFF",
+    "Aqua": "#00FFFF", "Green": "#90EE90", "Lime": "#00FF00", "PaleGreen": "#98FB98",
+    "Red": "#FFB6B6", "Salmon": "#FA8072", "Coral": "#FF7F50", "Blue": "#B6D0FF",
+    "SkyBlue": "#87CEEB", "LightBlue": "#ADD8E6", "Gray": "#D3D3D3", "Silver": "#C0C0C0",
+    "White": "#FFFFFF", "Orange": "#FFD580", "Wheat": "#F5DEB3", "Purple": "#E6E6FA",
+    "Plum": "#DDA0DD", "Orchid": "#DA70D6", "Brown": "#EEDFCC", "Pink": "#FFD1DC", 
+    "HotPink": "#FF69B4", "Violet": "#F3E5F5", "Navy": "#B0C4DE", "Teal": "#B2DFDB", 
+    "Olive": "#F5F5DC", "Maroon": "#F4CCCC"
 }
 
 TEXT_COLOR_MAP = {
-    "Black": "#000000", "Red": "#FF0000", "Blue": "#0000FF", "Green": "#008000",
-    "Gray": "#808080", "White": "#FFFFFF", "Orange": "#FFA500", "Purple": "#800080",
-    "Brown": "#A52A2A", "Pink": "#FFC0CB", "Violet": "#EE82EE", "Navy": "#000080",
+    "Black": "#000000", "Red": "#FF0000", "DarkRed": "#8B0000", "Crimson": "#DC143C",
+    "Blue": "#0000FF", "DarkBlue": "#00008B", "RoyalBlue": "#4169E1", "Green": "#008000",
+    "DarkGreen": "#006400", "SeaGreen": "#2E8B57", "Gray": "#808080", "DarkGray": "#A9A9A9",
+    "White": "#FFFFFF", "Orange": "#FFA500", "DarkOrange": "#FF8C00", "Purple": "#800080",
+    "DarkMagenta": "#8B008B", "Indigo": "#4B0082", "Brown": "#A52A2A", "SaddleBrown": "#8B4513",
+    "Pink": "#FFC0CB", "DeepPink": "#FF1493", "Violet": "#EE82EE", "Navy": "#000080", 
     "Teal": "#008080", "Olive": "#808000", "Maroon": "#800000"
 }
 
@@ -950,11 +956,18 @@ class FilterDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Add Filter" if filter_data is None else "Edit Filter")
         self.setModal(True)
-        self.text_input = QLineEdit()
-        self.case_sensitive = QCheckBox("Case-sensitive")
-        self.regex = QCheckBox("Regular expression")
-        self.exclude = QCheckBox("Excluding")
+        self.setMinimumWidth(400)
         
+        # Input Widgets
+        self.text_input = QLineEdit()
+        self.text_input.setPlaceholderText("Enter text to match...")
+        
+        # Options
+        self.case_sensitive = QCheckBox("Case Sensitive")
+        self.regex = QCheckBox("Regex")
+        self.exclude = QCheckBox("Exclude Line")
+        
+        # Colors
         self.text_color = QComboBox()
         self.text_color.addItem("None")
         self.text_color.addItems(sorted([k for k in TEXT_COLOR_MAP.keys()]))
@@ -963,10 +976,22 @@ class FilterDialog(QDialog):
         self.bg_color.addItem("None")
         self.bg_color.addItems(sorted([k for k in COLOR_MAP.keys()]))
         
+        # Preview
+        self.preview_lbl = QLabel("Preview Text")
+        self.preview_lbl.setAlignment(Qt.AlignCenter)
+        self.preview_lbl.setStyleSheet("border: 1px solid #ccc; padding: 10px; font-family: Monospace;")
+        
+        # Buttons
         self.ok_btn = QPushButton("OK")
         self.cancel_btn = QPushButton("Cancel")
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
+        
+        # Connect signals for preview
+        self.text_input.textChanged.connect(self.update_preview)
+        self.text_color.currentTextChanged.connect(self.update_preview)
+        self.bg_color.currentTextChanged.connect(self.update_preview)
+        
         self.layout_ui()
         
         if filter_data:
@@ -978,23 +1003,67 @@ class FilterDialog(QDialog):
             if idx >= 0: self.bg_color.setCurrentIndex(idx)
             idx = self.text_color.findText(filter_data.get("text_color", "None"))
             if idx >= 0: self.text_color.setCurrentIndex(idx)
+            
+        self.update_preview()
 
     def layout_ui(self):
-        layout = QVBoxLayout()
-        layout.addWidget(QLabel("Text:"))
-        layout.addWidget(self.text_input)
-        layout.addWidget(self.case_sensitive)
-        layout.addWidget(self.regex)
-        layout.addWidget(self.exclude)
-        layout.addWidget(QLabel("Text Color:"))
-        layout.addWidget(self.text_color)
-        layout.addWidget(QLabel("Background:"))
-        layout.addWidget(self.bg_color)
+        from PyQt5.QtWidgets import QGroupBox, QFormLayout
+        
+        main_layout = QVBoxLayout()
+        
+        # 1. Matching Group
+        match_group = QGroupBox("Match Criteria")
+        match_layout = QVBoxLayout()
+        match_layout.addWidget(self.text_input)
+        
+        opts_layout = QHBoxLayout()
+        opts_layout.addWidget(self.case_sensitive)
+        opts_layout.addWidget(self.regex)
+        opts_layout.addWidget(self.exclude)
+        opts_layout.addStretch()
+        match_layout.addLayout(opts_layout)
+        match_group.setLayout(match_layout)
+        main_layout.addWidget(match_group)
+        
+        # 2. Appearance Group
+        color_group = QGroupBox("Appearance")
+        color_layout = QHBoxLayout()
+        
+        form_layout = QFormLayout()
+        form_layout.addRow("Text Color:", self.text_color)
+        form_layout.addRow("Background:", self.bg_color)
+        
+        color_layout.addLayout(form_layout)
+        color_layout.addWidget(self.preview_lbl, 1) # Preview takes remaining space
+        
+        color_group.setLayout(color_layout)
+        main_layout.addWidget(color_group)
+        
+        # 3. Footer
         btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
         btn_layout.addWidget(self.ok_btn)
         btn_layout.addWidget(self.cancel_btn)
-        layout.addLayout(btn_layout)
-        self.setLayout(layout)
+        main_layout.addLayout(btn_layout)
+        
+        self.setLayout(main_layout)
+
+    def update_preview(self):
+        text = self.text_input.text()
+        if not text: text = "Preview Text"
+        
+        bg_name = self.bg_color.currentText()
+        text_name = self.text_color.currentText()
+        
+        style = "border: 1px solid #ccc; padding: 10px; font-family: Monospace;"
+        
+        if bg_name != "None":
+            style += f"background-color: {COLOR_MAP.get(bg_name, bg_name)};"
+        if text_name != "None":
+            style += f"color: {TEXT_COLOR_MAP.get(text_name, text_name)};"
+            
+        self.preview_lbl.setStyleSheet(style)
+        self.preview_lbl.setText(text)
 
     def get_filter_data(self):
         return {
