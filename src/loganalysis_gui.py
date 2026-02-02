@@ -6,12 +6,12 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QWidget, QDialog, QLineEdit, QCheckBox, QComboBox, 
     QPushButton, QLabel, QHBoxLayout, QListWidget, QSplitter, 
     QListWidgetItem, QTabWidget, QMessageBox, QInputDialog, QListView,
-    QAbstractItemView
+    QAbstractItemView, QDockWidget
 )
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtCore import Qt, pyqtSignal, QAbstractListModel, QModelIndex, QThread, QSize, QMutex
 
-# Shared Color Maps
+# Shared Color Maps - (Unchanged)
 COLOR_MAP = {
     "Khaki": "#F0E68C", "Yellow": "#FFFF00", "Cyan": "#00FFFF", "Green": "#90EE90",
     "Red": "#FFB6B6", "Blue": "#B6D0FF", "Gray": "#D3D3D3", "White": "#FFFFFF",
@@ -27,6 +27,7 @@ TEXT_COLOR_MAP = {
     "Teal": "#008080", "Olive": "#808000", "Maroon": "#800000"
 }
 
+# --- Workers (Unchanged logic, minor tweaks if needed) ---
 class AdbWorker(QThread):
     chunk_ready = pyqtSignal(list)
     error_occurred = pyqtSignal(str)
@@ -38,16 +39,15 @@ class AdbWorker(QThread):
 
     def run(self):
         try:
-            # Start adb logcat
-            # -v threadtime provides standard timestamp format
             self.process = subprocess.Popen(
                 ['adb', 'logcat', '-v', 'threadtime'],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 universal_newlines=True, 
                 encoding='utf-8', 
-                errors='replace' # Handle binary garbage safely
+                errors='replace'
             )
+            # Local reference for thread safety
             proc = self.process
             
             buffer = []
@@ -59,12 +59,10 @@ class AdbWorker(QThread):
                 if line:
                     buffer.append(line)
                 
-                # Emit chunks to avoid swamping the UI event loop
                 if len(buffer) >= 100 or (buffer and not line):
                     self.chunk_ready.emit(buffer)
                     buffer = []
             
-            # Clean up leftovers
             if buffer:
                 self.chunk_ready.emit(buffer)
                 
@@ -83,14 +81,14 @@ class AdbWorker(QThread):
         if self.process:
             try:
                 self.process.terminate()
-                self.process.kill() # Ensure it dies
+                self.process.kill()
             except:
                 pass
             self.process = None
 
 
 class FilterWorker(QThread):
-    finished_filtering = pyqtSignal(list, int) # list of indices, match count
+    finished_filtering = pyqtSignal(list, int)
     
     def __init__(self, lines, filters, show_only_filtered):
         super().__init__()
@@ -103,7 +101,6 @@ class FilterWorker(QThread):
         visible_indices = []
         match_count = 0
         
-        # Pre-compile regexes
         active_filters = []
         for f in self.filters:
             if f.get("active", True):
@@ -168,7 +165,7 @@ class LogModel(QAbstractListModel):
         self.filters = []
         self.show_line_numbers = True
         self.show_only_filtered = True
-        self.font = QFont("Monospace")
+        self.font = QFont("Monospace", 10) # Default size 10
         
     def rowCount(self, parent=QModelIndex()):
         return len(self.visible_indices)
@@ -265,31 +262,32 @@ class LogModel(QAbstractListModel):
         self.visible_indices = []
         self.endResetModel()
         
+    def zoom(self, delta):
+        size = self.font.pointSize() + delta
+        if size < 6: size = 6
+        if size > 30: size = 30
+        self.font.setPointSize(size)
+        self.layoutChanged.emit()
+        
     def append_chunk(self, lines):
         start_real_idx = len(self.all_lines)
         self.all_lines.extend(lines)
         
-        # Calculate visibility for new lines immediately
+        # Calculate visibility
         new_indices = []
-        
         has_active_filters = any(f.get("active", True) for f in self.filters)
         
         for i, line in enumerate(lines):
             real_idx = start_real_idx + i
-            
             if not has_active_filters:
                 new_indices.append(real_idx)
                 continue
                 
             matched = False
             is_excluded = False
-            
-            # Simple check consistent with FilterWorker logic
-            # We iterate reversed to check match logic, but exclude always wins
             for ftr in reversed(self.filters):
                 if not ftr.get("active", True):
                     continue
-                    
                 is_match = False
                 if ftr["regex"]:
                     try:
@@ -315,25 +313,70 @@ class LogModel(QAbstractListModel):
                         matched = True
             
             if not is_excluded:
-                if matched:
-                    new_indices.append(real_idx)
-                elif not self.show_only_filtered:
+                if matched or not self.show_only_filtered:
                     new_indices.append(real_idx)
 
-        # Notify view
         if new_indices:
             first_row_idx = len(self.visible_indices)
             self.beginInsertRows(QModelIndex(), first_row_idx, first_row_idx + len(new_indices) - 1)
             self.visible_indices.extend(new_indices)
             self.endInsertRows()
-            return True # Indicates data was added
+            return True
         return False
+
+# --- Find Dialog ---
+class FindDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Find")
+        self.setFixedWidth(400)
+        
+        layout = QVBoxLayout(self)
+        
+        input_layout = QHBoxLayout()
+        self.input_field = QLineEdit()
+        self.input_field.setPlaceholderText("Find text...")
+        self.input_field.returnPressed.connect(self.find_next)
+        input_layout.addWidget(self.input_field)
+        
+        self.btn_next = QPushButton("Next")
+        self.btn_next.clicked.connect(self.find_next)
+        self.btn_prev = QPushButton("Previous")
+        self.btn_prev.clicked.connect(self.find_prev)
+        input_layout.addWidget(self.btn_prev)
+        input_layout.addWidget(self.btn_next)
+        
+        layout.addLayout(input_layout)
+        
+        opt_layout = QHBoxLayout()
+        self.chk_case = QCheckBox("Case sensitive")
+        self.chk_regex = QCheckBox("Regex")
+        opt_layout.addWidget(self.chk_case)
+        opt_layout.addWidget(self.chk_regex)
+        opt_layout.addStretch()
+        layout.addLayout(opt_layout)
+        
+        self.status_lbl = QLabel("")
+        self.status_lbl.setStyleSheet("color: red")
+        layout.addWidget(self.status_lbl)
+
+    def find_next(self):
+        self.parent().find_in_files(self.input_field.text(), forward=True, 
+                                   case=self.chk_case.isChecked(), regex=self.chk_regex.isChecked())
+
+    def find_prev(self):
+        self.parent().find_in_files(self.input_field.text(), forward=False, 
+                                   case=self.chk_case.isChecked(), regex=self.chk_regex.isChecked())
+    
+    def set_status(self, text):
+        self.status_lbl.setText(text)
+
 
 class LogAnalysisMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LogAnalysis (High Performance)")
-        self.resize(900, 700)
+        self.resize(1000, 750)
         
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -344,6 +387,10 @@ class LogAnalysisMainWindow(QMainWindow):
         self.filter_thread = None
         self.adb_thread = None
         self.is_monitoring = False
+        self.is_paused = False
+        self.pending_chunks = []
+        
+        self.find_dialog = None
 
     def create_menu(self):
         menubar = self.menuBar()
@@ -372,9 +419,17 @@ class LogAnalysisMainWindow(QMainWindow):
         # Edit menu
         edit_menu = menubar.addMenu("Edit")
         add_filter_action = QAction("Add Filter", self)
-        add_filter_action.setShortcut("Ctrl+F")
+        add_filter_action.setShortcut("Ctrl+F") # Find usually takes Ctrl+F, renaming to Ctrl+Shift+F or just leave it
+        # UX Decision: Ctrl+F is Find. Filter should be something else.
+        # Changing Add Filter to Ctrl+E or Ctrl+Shift+F
+        add_filter_action.setShortcut("Ctrl+Shift+F") 
         add_filter_action.triggered.connect(self.add_filter_dialog)
         edit_menu.addAction(add_filter_action)
+        
+        find_action = QAction("Find", self)
+        find_action.setShortcut("Ctrl+F")
+        find_action.triggered.connect(self.show_find_dialog)
+        edit_menu.addAction(find_action)
 
         # View menu
         view_menu = menubar.addMenu("View")
@@ -389,11 +444,28 @@ class LogAnalysisMainWindow(QMainWindow):
         show_line_numbers_action.triggered.connect(self.toggle_line_numbers)
         view_menu.addAction(show_line_numbers_action)
         
+        view_menu.addSeparator()
+        zoom_in_action = QAction("Zoom In", self)
+        zoom_in_action.setShortcut("Ctrl++")
+        zoom_in_action.triggered.connect(lambda: self.log_model.zoom(1))
+        view_menu.addAction(zoom_in_action)
+        
+        zoom_out_action = QAction("Zoom Out", self)
+        zoom_out_action.setShortcut("Ctrl+-")
+        zoom_out_action.triggered.connect(lambda: self.log_model.zoom(-1))
+        view_menu.addAction(zoom_out_action)
+
         # Monitor Menu
         monitor_menu = menubar.addMenu("Monitor")
         self.adb_monitor_action = QAction("Start ADB Logcat", self)
         self.adb_monitor_action.triggered.connect(self.toggle_adb_monitoring)
         monitor_menu.addAction(self.adb_monitor_action)
+        
+        self.pause_action = QAction("Pause Monitoring", self, checkable=True)
+        self.pause_action.setShortcut("Space")
+        self.pause_action.triggered.connect(self.toggle_pause)
+        self.pause_action.setEnabled(False) # Disabled until monitoring starts
+        monitor_menu.addAction(self.pause_action)
 
         # Tabs menu
         tabs_menu = menubar.addMenu("Tabs")
@@ -428,6 +500,9 @@ class LogAnalysisMainWindow(QMainWindow):
         self.log_view.setModel(self.log_model)
 
         self.filter_tabs = QTabWidget()
+        self.filter_tabs.setTabBarAutoHide(False)
+        self.filter_tabs.tabBarDoubleClicked.connect(self.rename_filter_tab_by_index) # Double click rename
+        
         self.filter_tab_lists = []
         self.filters = []
         self.add_filter_tab()
@@ -449,12 +524,72 @@ class LogAnalysisMainWindow(QMainWindow):
         container.setLayout(layout)
         self.setCentralWidget(container)
 
+    def show_find_dialog(self):
+        if not self.find_dialog:
+            self.find_dialog = FindDialog(self)
+        self.find_dialog.show()
+        self.find_dialog.raise_()
+        self.find_dialog.activateWindow()
+
+    def find_in_files(self, text, forward=True, case=False, regex=False):
+        if not text:
+            return
+            
+        model = self.log_model
+        start_idx = self.log_view.currentIndex().row()
+        if start_idx < 0: start_idx = 0
+        
+        # Avoid infinite loop if nothing found
+        visited_count = 0
+        total = model.rowCount()
+        if total == 0:
+            return
+
+        idx = start_idx
+        
+        while visited_count < total:
+            if forward:
+                idx += 1
+                if idx >= total: idx = 0
+            else:
+                idx -= 1
+                if idx < 0: idx = total - 1
+            
+            # Use raw string (model.all_lines via visible_indices)
+            real_idx = model.visible_indices[idx]
+            line = model.all_lines[real_idx]
+            
+            match = False
+            if regex:
+                flags = 0 if case else re.IGNORECASE
+                try:
+                    if re.search(text, line, flags):
+                        match = True
+                except: pass
+            else:
+                if case:
+                    if text in line: match = True
+                else:
+                    if text.lower() in line.lower(): match = True
+            
+            if match:
+                # Select it
+                index_obj = model.index(idx, 0)
+                self.log_view.setCurrentIndex(index_obj)
+                self.log_view.scrollTo(index_obj, QAbstractItemView.PositionAtCenter)
+                self.find_dialog.set_status("")
+                return
+            
+            visited_count += 1
+            
+        self.find_dialog.set_status("Not found")
+
+
     def toggle_adb_monitoring(self):
         if not self.is_monitoring:
-            # Start Monitoring
-            self.log_model.clear() # Clear existing logs
+            self.log_model.clear()
+            self.pending_chunks = []
             
-            # Update filter state in model before starting (usually done by apply_filters but let's ensure)
             active_filters = []
             for filters in self.filters:
                 for f in filters:
@@ -468,22 +603,45 @@ class LogAnalysisMainWindow(QMainWindow):
             self.adb_thread.start()
             
             self.is_monitoring = True
+            self.is_paused = False
             self.adb_monitor_action.setText("Stop ADB Logcat")
+            self.pause_action.setEnabled(True)
+            self.pause_action.setChecked(False)
             self.status_bar.showMessage("Monitoring ADB Logcat...")
         else:
-            # Stop Monitoring
             if self.adb_thread:
                 self.adb_thread.stop()
                 self.adb_thread.wait()
                 self.adb_thread = None
             
             self.is_monitoring = False
+            self.is_paused = False
             self.adb_monitor_action.setText("Start ADB Logcat")
+            self.pause_action.setEnabled(False)
             self.status_bar.showMessage(f"Monitoring stopped. Total lines: {len(self.log_model.all_lines)}")
+            
+            # Process leftovers
+            while self.pending_chunks:
+                chunk = self.pending_chunks.pop(0)
+                self.log_model.append_chunk(chunk)
+
+    def toggle_pause(self, checked):
+        self.is_paused = checked
+        if self.is_paused:
+            self.status_bar.showMessage("Monitoring Paused (Buffering...)")
+        else:
+            self.status_bar.showMessage("Resuming...")
+            # Flush buffer
+            while self.pending_chunks:
+                chunk = self.pending_chunks.pop(0)
+                self.on_adb_chunk(chunk) # Process them
 
     def on_adb_chunk(self, lines):
+        if self.is_paused:
+            self.pending_chunks.append(lines)
+            return
+
         was_at_bottom = False
-        # Autosroll Check: if scrollbar is at max, keep it at max
         scrollbar = self.log_view.verticalScrollBar()
         if scrollbar.value() == scrollbar.maximum():
             was_at_bottom = True
@@ -492,16 +650,16 @@ class LogAnalysisMainWindow(QMainWindow):
         
         if data_added and was_at_bottom:
             self.log_view.scrollToBottom()
-            
-        # Update status periodically? Or just rely on the count
-        # self.status_bar.showMessage(f"Monitoring... {len(self.log_model.visible_indices)} shown")
 
     def on_adb_error(self, message):
-        self.toggle_adb_monitoring() # Stop monitoring
+        self.toggle_adb_monitoring() 
         QMessageBox.critical(self, "ADB Error", message)
 
     def rename_filter_tab(self):
         idx = self.filter_tabs.currentIndex()
+        self.rename_filter_tab_by_index(idx)
+
+    def rename_filter_tab_by_index(self, idx):
         if idx >= 0:
             current_name = self.filter_tabs.tabText(idx)
             new_name, ok = QInputDialog.getText(self, "Rename Tab", "Tab name:", text=current_name)
@@ -511,10 +669,11 @@ class LogAnalysisMainWindow(QMainWindow):
     def show_about_dialog(self):
         QMessageBox.about(self, "About LogAnalysis GUI",
                           "<b>LogAnalysis GUI</b><br>"
-                          "Version 0.0.4 (ADB Support)<br>"
+                          "Version 0.0.5 (UI Polish)<br>"
                           "Developed by: Drew Yu<br>"
-                          "Optimized for large files and ADB streaming.")
+                          "Optimized API with Zoom, Search, and Pause.")
 
+    # --- Standard filter/tab methods (Unchanged except renames) ---
     def add_filter_tab(self):
         filter_list = QListWidget()
         filter_list.setDragDropMode(QListWidget.InternalMove)
@@ -574,13 +733,10 @@ class LogAnalysisMainWindow(QMainWindow):
 
     def open_file(self):
         if self.is_monitoring:
-            self.toggle_adb_monitoring() # Stop monitoring if opening file
+            self.toggle_adb_monitoring()
 
         file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open Log File",
-            "",
-            "Log/Text Files (*.log *.txt);;All Files (*)"
+            self, "Open Log File", "", "Log/Text Files (*.log *.txt);;All Files (*)"
         )
         if file_path:
             self.status_bar.showMessage("Loading file...")
@@ -588,6 +744,7 @@ class LogAnalysisMainWindow(QMainWindow):
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
                     lines = f.readlines()
+                # Auto-detect JSON logs or weird formats? No, basic lines for now.
                 self.log_model.set_lines(lines)
                 self.status_bar.showMessage(f"Loaded: {file_path} ({len(lines)} lines)")
                 self.apply_filters()
@@ -707,7 +864,6 @@ class LogAnalysisMainWindow(QMainWindow):
                 self.status_bar.showMessage(f"Error loading filters: {str(e)}")
 
     def apply_filters(self):
-        # Determine active filters
         active_filters = []
         for filters in self.filters:
             for f in filters:
@@ -716,13 +872,6 @@ class LogAnalysisMainWindow(QMainWindow):
         
         self.log_model.filters = active_filters
         
-        # If monitoring, we don't re-run FilterWorker on the whole file live every keypress?
-        # Actually we SHOULD, to update the view of the past logs.
-        # But we must be careful not to conflict with AdbWorker appending.
-        # For simplicity: If monitoring, we rely on the realtime append check? 
-        # No, if user adds a filter during monitoring, they expect it to apply to old logs too.
-        # So we DO need to re-run filtering on self.log_model.all_lines.
-        
         if not self.log_model.all_lines:
             return
         
@@ -730,7 +879,10 @@ class LogAnalysisMainWindow(QMainWindow):
             self.filter_thread.stop()
             self.filter_thread.wait()
         
-        self.status_bar.showMessage("Refiltering...")
+        # Don't show status for background reflitering during monitoring to reduce spam? 
+        if not self.is_monitoring:
+            self.status_bar.showMessage("Refiltering...")
+            
         self.filter_thread = FilterWorker(
             self.log_model.all_lines, 
             active_filters, 
@@ -742,17 +894,17 @@ class LogAnalysisMainWindow(QMainWindow):
     def on_filtering_finished(self, visible_indices, match_count):
         self.log_model.update_visible_indices(visible_indices)
         if self.is_monitoring:
-             self.status_bar.showMessage(f"Monitoring... ({match_count} visible)")
+             self.status_bar.showMessage(f"Monitoring... ({len(self.log_model.all_lines)} lines)")
         else:
              self.status_bar.showMessage(f"Showing {len(visible_indices)} lines ({match_count} matched)")
 
+# --- Child Classes ---
 class FilterItemWidget(QWidget):
     filter_toggled = pyqtSignal(dict, bool)
 
     def __init__(self, filter_data, parent=None):
         super().__init__(parent)
         self.filter_data = filter_data
-        
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         
@@ -762,7 +914,6 @@ class FilterItemWidget(QWidget):
 
         self.text_label = QLabel()
         self.count_label = QLabel()
-        
         self.text_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.count_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         
@@ -778,32 +929,21 @@ class FilterItemWidget(QWidget):
 
     def update_display(self):
         text = self.filter_data["text"]
-        if self.filter_data["exclude"]:
-            text = f"NOT: {text}"
-        if self.filter_data["regex"]:
-            text = f"REGEX: {text}"
-        if self.filter_data["case_sensitive"]:
-            text = f"CASE: {text}"
-        
+        if self.filter_data["exclude"]: text = f"NOT: {text}"
+        if self.filter_data["regex"]: text = f"REGEX: {text}"
+        if self.filter_data["case_sensitive"]: text = f"CASE: {text}"
         self.text_label.setText(text)
         
         count = self.filter_data.get('total_matches', 0)
-        if count > 0:
-            self.count_label.setText(f"({count})")
-        else:
-            self.count_label.setText("")
+        if count > 0: self.count_label.setText(f"({count})")
+        else: self.count_label.setText("")
 
         bg_color_name = self.filter_data.get("bg_color", "None")
         text_color_name = self.filter_data.get("text_color", "None")
-
-        style_sheet = ""
-        if bg_color_name != "None":
-            style_sheet += f"background-color: {COLOR_MAP.get(bg_color_name, bg_color_name)};"
-        
-        if text_color_name != "None":
-            style_sheet += f"color: {TEXT_COLOR_MAP.get(text_color_name, text_color_name)};"
-        
-        self.text_label.setStyleSheet(style_sheet)
+        style = ""
+        if bg_color_name != "None": style += f"background-color: {COLOR_MAP.get(bg_color_name, bg_color_name)};"
+        if text_color_name != "None": style += f"color: {TEXT_COLOR_MAP.get(text_color_name, text_color_name)};"
+        self.text_label.setStyleSheet(style)
 
 class FilterDialog(QDialog):
     def __init__(self, parent=None, filter_data=None):
@@ -834,13 +974,10 @@ class FilterDialog(QDialog):
             self.case_sensitive.setChecked(filter_data["case_sensitive"])
             self.regex.setChecked(filter_data["regex"])
             self.exclude.setChecked(filter_data["exclude"])
-            
             idx = self.bg_color.findText(filter_data["bg_color"])
-            if idx >= 0:
-                self.bg_color.setCurrentIndex(idx)
+            if idx >= 0: self.bg_color.setCurrentIndex(idx)
             idx = self.text_color.findText(filter_data.get("text_color", "None"))
-            if idx >= 0:
-                self.text_color.setCurrentIndex(idx)
+            if idx >= 0: self.text_color.setCurrentIndex(idx)
 
     def layout_ui(self):
         layout = QVBoxLayout()
