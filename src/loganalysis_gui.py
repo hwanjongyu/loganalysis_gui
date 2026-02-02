@@ -6,9 +6,9 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QWidget, QDialog, QLineEdit, QCheckBox, QComboBox, 
     QPushButton, QLabel, QHBoxLayout, QListWidget, QSplitter, 
     QListWidgetItem, QTabWidget, QMessageBox, QInputDialog, QListView,
-    QAbstractItemView, QDockWidget
+    QAbstractItemView, QDockWidget, QToolBar, QStyle, QGroupBox, QFormLayout
 )
-from PyQt5.QtGui import QColor, QFont
+from PyQt5.QtGui import QColor, QFont, QIcon, QPalette
 from PyQt5.QtCore import Qt, pyqtSignal, QAbstractListModel, QModelIndex, QThread, QSize, QMutex
 
 # Shared Color Maps
@@ -33,7 +33,69 @@ TEXT_COLOR_MAP = {
     "Teal": "#008080", "Olive": "#808000", "Maroon": "#800000"
 }
 
-# --- Workers (Unchanged logic, minor tweaks if needed) ---
+DARK_STYLESHEET = """
+QMainWindow, QWidget {
+    background-color: #2b2b2b;
+    color: #e0e0e0;
+}
+QListView {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+    selection-background-color: #3a3a3a;
+    selection-color: #ffffff;
+}
+QTabWidget::pane {
+    border: 1px solid #444;
+}
+QTabBar::tab {
+    background: #333;
+    color: #aaa;
+    padding: 5px 10px;
+}
+QTabBar::tab:selected {
+    background: #444;
+    color: #fff;
+    font-weight: bold;
+}
+QLineEdit, QComboBox, QCheckBox {
+    background-color: #333;
+    color: #e0e0e0;
+    border: 1px solid #555;
+    padding: 2px;
+}
+QPushButton {
+    background-color: #444;
+    color: #e0e0e0;
+    border: 1px solid #555;
+    padding: 5px;
+}
+QPushButton:hover {
+    background-color: #555;
+}
+QStatusBar {
+    background-color: #222;
+    color: #888;
+}
+QMenuBar {
+    background-color: #2b2b2b;
+    color: #e0e0e0;
+}
+QMenuBar::item:selected {
+    background-color: #444;
+}
+QMenu {
+    background-color: #2b2b2b;
+    color: #e0e0e0;
+    border: 1px solid #444;
+}
+QMenu::item:selected {
+    background-color: #444;
+}
+QLabel {
+    color: #e0e0e0;
+}
+"""
+
 class AdbWorker(QThread):
     chunk_ready = pyqtSignal(list)
     error_occurred = pyqtSignal(str)
@@ -53,7 +115,6 @@ class AdbWorker(QThread):
                 encoding='utf-8', 
                 errors='replace'
             )
-            # Local reference for thread safety
             proc = self.process
             
             buffer = []
@@ -94,7 +155,7 @@ class AdbWorker(QThread):
 
 
 class FilterWorker(QThread):
-    finished_filtering = pyqtSignal(list, int)
+    finished_filtering = pyqtSignal(list, int, list)
     
     def __init__(self, lines, filters, show_only_filtered):
         super().__init__()
@@ -107,17 +168,23 @@ class FilterWorker(QThread):
         visible_indices = []
         match_count = 0
         
-        active_filters = []
-        for f in self.filters:
+        # We need a better way to track per-filter matches.
+        # Let's initialize a count list matching the size of self.filters
+        filter_counts = [0] * len(self.filters)
+        
+        # Prepare active filters with their original index
+        prepared_filters = []
+        for i, f in enumerate(self.filters):
             if f.get("active", True):
                 f_data = f.copy()
+                f_data['original_index'] = i 
                 if f["regex"]:
-                    flags = 0 if f["case_sensitive"] else re.IGNORECASE
                     try:
+                        flags = 0 if f["case_sensitive"] else re.IGNORECASE
                         f_data["compiled_re"] = re.compile(f["text"], flags)
                     except re.error:
                         f_data["compiled_re"] = None
-                active_filters.append(f_data)
+                prepared_filters.append(f_data)
 
         count = len(self.lines)
         for i in range(count):
@@ -126,12 +193,38 @@ class FilterWorker(QThread):
 
             line = self.lines[i]
             
-            if not active_filters:
+            if not prepared_filters:
                 visible_indices.append(i)
                 continue
 
             matched = False
-            for ftr in reversed(active_filters):
+            
+            # Check filters (Reversed priority for coloring/logic, but for counting we want to know WHICH ones matched)
+            # Logic: If EXCLUDE matches, the line is gone.
+            # If INCLUDE matches, the line is kept.
+            
+            # The previous logic was: last matching match decides color.
+            # But for "match count", if a line is excluded, does it count as a match for the exclude filter? Yes.
+            # If a line matches 3 includes, does it count for all 3? Yes.
+            
+            # Let's iterate ALL active filters to count matches
+            # But the visibility logic (reversed loop) needs to be preserved.
+            
+            # Optimization: 
+            # 1. Determine visibility
+            # 2. Update counts for all matching filters
+            
+            # Visibility PASS
+            # We must stick to the exact logic we had before for consistency
+            
+            # Let's separate "Counting" from "Visibility Logic"? 
+            # It's faster to do it in one pass.
+            
+            is_visible_line = False
+            line_matched_any_include = False
+            
+            # We iterate reversed to determine the "Winning" filter for color/exclusion logic
+            for ftr in reversed(prepared_filters):
                 is_match = False
                 if ftr["regex"]:
                     if ftr["compiled_re"] and ftr["compiled_re"].search(line):
@@ -144,21 +237,112 @@ class FilterWorker(QThread):
                         if ftr["text"].lower() in line.lower():
                             is_match = True
                 
-                if ftr["exclude"]:
-                    if is_match:
-                        matched = False
-                        break 
+                if is_match:
+                    # Increment count for this filter
+                    filter_counts[ftr['original_index']] += 1
+                    
+                    # Logic
+                    if not is_visible_line: # If we haven't decided it's excluded yet...
+                        if ftr["exclude"]:
+                            # If it matches an exclude, it wipes out previous matches (since we are reversed)
+                            # Wait, previous logic:
+                            # reversed loop. 
+                            # If Exclude matches -> matched=False, break.
+                            # If Include matches -> matched=True.
+                            # So Exclude has highest priority if it appears later in the list (higher index).
+                            matched = False
+                            break # Hard stop for exclusion
+                        else:
+                            matched = True
+                            # Continue to count other matches?
+                            # The original code did `if matched: break` ?? NO.
+                            # Original code: 
+                            # if exclude: matched=False; break
+                            # else: matched=True (and continue loop? Default break was not there for include)
+                            # Actually, `if is_match: matched = True`. It keeps going.
+                            # So an earlier exclude (lower index) could be overridden by a later include?
+                            # No, reversed(active_filters). The last filter in list (highest index) is checked first.
+                            pass
+            
+            # Re-implementing original logic exactly coupled with counting is tricky without duplicating regex checks.
+            # Let's just do checks once per filter.
+            
+            this_line_matches = [] # list of original_indices that matched
+            
+            for ftr in prepared_filters: # Forward order is easier for mental model, but let's stick to simple individual checks first
+                is_match = False
+                if ftr["regex"]:
+                    if ftr["compiled_re"] and ftr["compiled_re"].search(line):
+                        is_match = True
                 else:
-                    if is_match:
-                        matched = True
+                    if ftr["case_sensitive"]:
+                        if ftr["text"] in line:
+                            is_match = True
+                    else:
+                        if ftr["text"].lower() in line.lower():
+                            is_match = True
+                
+                if is_match:
+                    filter_counts[ftr['original_index']] += 1
+                    this_line_matches.append(ftr)
+            
+            # Now decide visibility based on matches
+            final_verdict = False
+            if not this_line_matches:
+                 pass # No filters matched
+            else:
+                # Iterate matches in reverse order of definition (Priority)
+                for ftr in reversed(this_line_matches):
+                    if ftr["exclude"]:
+                        final_verdict = False
+                        break # Exclude wins
+                    else:
+                        final_verdict = True
+                        # If include wins, we stop? Or do we check for higher priority excludes?
+                        # Example: [Include "A", Exclude "B"]
+                        # Line "AB".
+                        # Reversed: Check Exclude B. Matches. Verdict = False. Break. Result: Hidden. Correct.
                         
-            if matched:
+                        # Example: [Exclude "B", Include "A"]
+                        # Line "AB".
+                        # Reversed: Check Include A. Matches. Verdict = True. 
+                        # Continue? If we continue, we check Exclude B. Matches. Verdict = False. Break. 
+                        # So yes, we just continue.
+                        
+                        # Wait, original code:
+                        # for ftr in reversed(active_filters):
+                        #    check match...
+                        #    if match: 
+                        #       if exclude: matched=False; break
+                        #       else: matched=True
+                        pass
+            
+            # Let's proceed with the original logic but update counts on the fly.
+            # It is safer re-run the loop logic exactly or refactor carefully.
+            
+            # Reset for decision logic
+            matched_decision = False
+            for ftr in reversed(prepared_filters):
+                # We already know if it matched from the counting pass? 
+                # Doing regex twice is slow.
+                # Let's rely on 'this_line_matches' list which contains objects.
+                
+                # Check if this ftr is in this_line_matches
+                # Optimization: ftr is the same object reference.
+                if ftr in this_line_matches:
+                    if ftr["exclude"]:
+                        matched_decision = False
+                        break
+                    else:
+                        matched_decision = True
+            
+            if matched_decision:
                 match_count += 1
                 visible_indices.append(i)
             elif not self.show_only_filtered:
                 visible_indices.append(i)
         
-        self.finished_filtering.emit(visible_indices, match_count)
+        self.finished_filtering.emit(visible_indices, match_count, filter_counts)
 
     def stop(self):
         self.is_running = False
@@ -239,8 +423,15 @@ class LogModel(QAbstractListModel):
                     if ftr.get("text_color", "None") != "None":
                         fg_result = ftr["text_color"]
         
+        # Default text color behavior depends on theme, but model returns specific colors
+        # If no match and not filtered out, we want default colors.
+        # Returning None lets the view decide based on palette/stylesheet.
+        
         if not matched_any:
             if role == Qt.ForegroundRole:
+                # If dark mode, we might want to return None to let QSS handle it,
+                # or return specific gray.
+                # Returning a specific gray works for both usually.
                 return QColor("#808080")
             return None
 
@@ -330,7 +521,6 @@ class LogModel(QAbstractListModel):
             return True
         return False
 
-# --- Find Dialog ---
 class FindDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -382,10 +572,14 @@ class LogAnalysisMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LogAnalysis (High Performance)")
-        self.resize(1000, 750)
+        self.resize(1100, 800)
         
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+        
+        # Permanent Status Widgets
+        self.lbl_stats = QLabel("Lines: 0 | Visible: 0")
+        self.status_bar.addPermanentWidget(self.lbl_stats)
         
         self.create_menu()
         self.init_ui()
@@ -397,42 +591,44 @@ class LogAnalysisMainWindow(QMainWindow):
         self.pending_chunks = []
         
         self.find_dialog = None
+        
+        # Apply dark mode by default or based on prefs? 
+        # Let's start with Light (System) default.
 
     def create_menu(self):
         menubar = self.menuBar()
+        style = self.style()
 
         # File menu
         file_menu = menubar.addMenu("File")
-        open_action = QAction("Open", self)
+        open_action = QAction(style.standardIcon(QStyle.SP_DialogOpenButton), "Open", self)
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_file)
         file_menu.addAction(open_action)
         
-        load_filters_action = QAction("Load Filters", self)
+        load_filters_action = QAction(style.standardIcon(QStyle.SP_DirOpenIcon), "Load Filters", self)
         load_filters_action.setShortcut("Ctrl+L")
         load_filters_action.triggered.connect(self.load_filters)
         file_menu.addAction(load_filters_action)
         
-        save_filters_action = QAction("Save Filters", self)
+        save_filters_action = QAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save Filters", self)
         save_filters_action.setShortcut("Ctrl+S")
         save_filters_action.triggered.connect(self.save_filters)
         file_menu.addAction(save_filters_action)
         
-        exit_action = QAction("Exit", self)
+        file_menu.addSeparator()
+        exit_action = QAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Exit", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
         # Edit menu
         edit_menu = menubar.addMenu("Edit")
-        add_filter_action = QAction("Add Filter", self)
-        add_filter_action.setShortcut("Ctrl+F") # Find usually takes Ctrl+F, renaming to Ctrl+Shift+F or just leave it
-        # UX Decision: Ctrl+F is Find. Filter should be something else.
-        # Changing Add Filter to Ctrl+E or Ctrl+Shift+F
+        add_filter_action = QAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Add Filter", self)
         add_filter_action.setShortcut("Ctrl+Shift+F") 
         add_filter_action.triggered.connect(self.add_filter_dialog)
         edit_menu.addAction(add_filter_action)
         
-        find_action = QAction("Find", self)
+        find_action = QAction(style.standardIcon(QStyle.SP_FileDialogContentsView), "Find", self)
         find_action.setShortcut("Ctrl+F")
         find_action.triggered.connect(self.show_find_dialog)
         edit_menu.addAction(find_action)
@@ -460,27 +656,37 @@ class LogAnalysisMainWindow(QMainWindow):
         zoom_out_action.setShortcut("Ctrl+-")
         zoom_out_action.triggered.connect(lambda: self.log_model.zoom(-1))
         view_menu.addAction(zoom_out_action)
+        
+        # Theme Submenu
+        theme_menu = view_menu.addMenu("Theme")
+        self.light_theme_action = QAction("Light (System)", self, checkable=True)
+        self.dark_theme_action = QAction("Dark", self, checkable=True)
+        self.light_theme_action.setChecked(True)
+        self.light_theme_action.triggered.connect(lambda: self.set_theme(light=True))
+        self.dark_theme_action.triggered.connect(lambda: self.set_theme(light=False))
+        theme_menu.addAction(self.light_theme_action)
+        theme_menu.addAction(self.dark_theme_action)
 
         # Monitor Menu
         monitor_menu = menubar.addMenu("Monitor")
-        self.adb_monitor_action = QAction("Start ADB Logcat", self)
+        self.adb_monitor_action = QAction(style.standardIcon(QStyle.SP_ComputerIcon), "Start ADB Logcat", self)
         self.adb_monitor_action.triggered.connect(self.toggle_adb_monitoring)
         monitor_menu.addAction(self.adb_monitor_action)
         
-        self.pause_action = QAction("Pause Monitoring", self, checkable=True)
+        self.pause_action = QAction(style.standardIcon(QStyle.SP_MediaPause), "Pause Monitoring", self, checkable=True)
         self.pause_action.setShortcut("Space")
         self.pause_action.triggered.connect(self.toggle_pause)
-        self.pause_action.setEnabled(False) # Disabled until monitoring starts
+        self.pause_action.setEnabled(False) 
         monitor_menu.addAction(self.pause_action)
 
         # Tabs menu
         tabs_menu = menubar.addMenu("Tabs")
-        add_tab_action = QAction("Add Tab", self)
+        add_tab_action = QAction(style.standardIcon(QStyle.SP_FileDialogNewFolder), "Add Tab", self)
         add_tab_action.setShortcut("Ctrl+T")
         add_tab_action.triggered.connect(self.add_filter_tab)
         tabs_menu.addAction(add_tab_action)
         
-        del_tab_action = QAction("Delete Tab", self)
+        del_tab_action = QAction(style.standardIcon(QStyle.SP_DialogDiscardButton), "Delete Tab", self)
         del_tab_action.setShortcut("Ctrl+D")
         del_tab_action.triggered.connect(self.delete_filter_tab)
         tabs_menu.addAction(del_tab_action)
@@ -492,11 +698,36 @@ class LogAnalysisMainWindow(QMainWindow):
 
         # Help menu
         help_menu = menubar.addMenu("Help")
-        about_action = QAction("About", self)
+        shortcuts_action = QAction(style.standardIcon(QStyle.SP_MessageBoxQuestion), "Shortcuts", self)
+        shortcuts_action.triggered.connect(self.show_shortcuts)
+        help_menu.addAction(shortcuts_action)
+        
+        about_action = QAction(style.standardIcon(QStyle.SP_MessageBoxInformation), "About", self)
         about_action.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_action)
 
     def init_ui(self):
+        # Quick Filter Toolbar
+        self.quick_filter_toolbar = QToolBar("Quick Filter")
+        self.addToolBar(Qt.TopToolBarArea, self.quick_filter_toolbar)
+        
+        self.quick_input = QLineEdit()
+        self.quick_input.setPlaceholderText("Quick Filter (Enter to add)...")
+        self.quick_input.returnPressed.connect(self.add_quick_filter)
+        self.quick_input.setFixedWidth(200)
+        
+        self.quick_filter_toolbar.addWidget(QLabel("  Quick Add: "))
+        self.quick_filter_toolbar.addWidget(self.quick_input)
+        
+        self.quick_case = QCheckBox("Case")
+        self.quick_regex = QCheckBox("Regex")
+        self.quick_exclude = QCheckBox("Excl")
+        
+        self.quick_filter_toolbar.addWidget(self.quick_case)
+        self.quick_filter_toolbar.addWidget(self.quick_regex)
+        self.quick_filter_toolbar.addWidget(self.quick_exclude)
+        
+        # Main Layout
         self.log_view = QListView()
         self.log_view.setUniformItemSizes(True) 
         self.log_view.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -507,7 +738,7 @@ class LogAnalysisMainWindow(QMainWindow):
 
         self.filter_tabs = QTabWidget()
         self.filter_tabs.setTabBarAutoHide(False)
-        self.filter_tabs.tabBarDoubleClicked.connect(self.rename_filter_tab_by_index) # Double click rename
+        self.filter_tabs.tabBarDoubleClicked.connect(self.rename_filter_tab_by_index) 
         
         self.filter_tab_lists = []
         self.filters = []
@@ -529,6 +760,49 @@ class LogAnalysisMainWindow(QMainWindow):
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
+
+    def set_theme(self, light=True):
+        if light:
+            self.light_theme_action.setChecked(True)
+            self.dark_theme_action.setChecked(False)
+            QApplication.instance().setStyleSheet("")
+        else:
+            self.light_theme_action.setChecked(False)
+            self.dark_theme_action.setChecked(True)
+            QApplication.instance().setStyleSheet(DARK_STYLESHEET)
+
+    def add_quick_filter(self):
+        text = self.quick_input.text().strip()
+        if not text: return
+        
+        filter_data = {
+            "text": text,
+            "case_sensitive": self.quick_case.isChecked(),
+            "regex": self.quick_regex.isChecked(),
+            "exclude": self.quick_exclude.isChecked(),
+            "bg_color": "None",
+            "text_color": "None",
+            "active": True
+        }
+        
+        filter_list, filters = self.current_filter_list()
+        
+        item = QListWidgetItem()
+        self.apply_filter_colors_to_list_item(item, filter_data)
+        filter_list.addItem(item)
+        filters.append(filter_data)
+
+        widget = FilterItemWidget(filter_data)
+        widget.filter_toggled.connect(self._on_filter_toggled)
+        filter_list.setItemWidget(item, widget)
+        
+        self.apply_filters()
+        self.quick_input.clear()
+
+    def update_stats(self):
+        total = len(self.log_model.all_lines)
+        visible = len(self.log_model.visible_indices)
+        self.lbl_stats.setText(f"Lines: {total} | Visible: {visible}")
 
     def show_find_dialog(self):
         if not self.find_dialog:
@@ -592,6 +866,7 @@ class LogAnalysisMainWindow(QMainWindow):
 
 
     def toggle_adb_monitoring(self):
+        style = self.style()
         if not self.is_monitoring:
             self.log_model.clear()
             self.pending_chunks = []
@@ -611,6 +886,7 @@ class LogAnalysisMainWindow(QMainWindow):
             self.is_monitoring = True
             self.is_paused = False
             self.adb_monitor_action.setText("Stop ADB Logcat")
+            self.adb_monitor_action.setIcon(style.standardIcon(QStyle.SP_MediaStop))
             self.pause_action.setEnabled(True)
             self.pause_action.setChecked(False)
             self.status_bar.showMessage("Monitoring ADB Logcat...")
@@ -623,14 +899,16 @@ class LogAnalysisMainWindow(QMainWindow):
             self.is_monitoring = False
             self.is_paused = False
             self.adb_monitor_action.setText("Start ADB Logcat")
+            self.adb_monitor_action.setIcon(style.standardIcon(QStyle.SP_ComputerIcon))
             self.pause_action.setEnabled(False)
-            self.status_bar.showMessage(f"Monitoring stopped. Total lines: {len(self.log_model.all_lines)}")
+            self.status_bar.showMessage(f"Monitoring stopped.")
+            self.update_stats()
             
             # Process leftovers
             while self.pending_chunks:
                 chunk = self.pending_chunks.pop(0)
                 self.log_model.append_chunk(chunk)
-
+            
     def toggle_pause(self, checked):
         self.is_paused = checked
         if self.is_paused:
@@ -653,6 +931,8 @@ class LogAnalysisMainWindow(QMainWindow):
             was_at_bottom = True
             
         data_added = self.log_model.append_chunk(lines)
+        if data_added:
+            self.update_stats()
         
         if data_added and was_at_bottom:
             self.log_view.scrollToBottom()
@@ -675,9 +955,21 @@ class LogAnalysisMainWindow(QMainWindow):
     def show_about_dialog(self):
         QMessageBox.about(self, "About LogAnalysis GUI",
                           "<b>LogAnalysis GUI</b><br>"
-                          "Version 0.0.5 (UI Polish)<br>"
+                          "Version 0.0.6 (Polished UI)<br>"
                           "Developed by: Drew Yu<br>"
-                          "Optimized API with Zoom, Search, and Pause.")
+                          "Highlights: Dark Mode, Quick Filter, Icons.")
+
+    def show_shortcuts(self):
+        QMessageBox.information(self, "Shortcuts",
+                                "<b>Keyboard Shortcuts</b><br><br>"
+                                "<b>Ctrl+O</b>: Open File<br>"
+                                "<b>Ctrl+F</b>: Find<br>"
+                                "<b>Ctrl+Shift+F</b>: Add Filter<br>"
+                                "<b>Ctrl+T</b>: Add Tab<br>"
+                                "<b>Ctrl+D</b>: Delete Tab<br>"
+                                "<b>Ctrl+(+/-)</b>: Zoom In/Out<br>"
+                                "<b>Space</b>: Pause Monitoring<br>"
+                                )
 
     # --- Standard filter/tab methods (Unchanged except renames) ---
     def add_filter_tab(self):
@@ -750,9 +1042,9 @@ class LogAnalysisMainWindow(QMainWindow):
             try:
                 with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
                     lines = f.readlines()
-                # Auto-detect JSON logs or weird formats? No, basic lines for now.
                 self.log_model.set_lines(lines)
-                self.status_bar.showMessage(f"Loaded: {file_path} ({len(lines)} lines)")
+                self.status_bar.showMessage(f"Loaded: {file_path}")
+                self.update_stats()
                 self.apply_filters()
             except Exception as e:
                 self.status_bar.showMessage(f"Error loading file: {str(e)}")
@@ -870,13 +1162,30 @@ class LogAnalysisMainWindow(QMainWindow):
                 self.status_bar.showMessage(f"Error loading filters: {str(e)}")
 
     def apply_filters(self):
-        active_filters = []
-        for filters in self.filters:
-            for f in filters:
-                if f.get("active", True):
-                    active_filters.append(f)
+        # We need to pass ALL filters to the worker, but we also need to know which ones are active.
+        # To map results back, we should pass the structure or a flattened list with IDs.
+        # The 'self.filters' is a list of lists (tabs).
         
-        self.log_model.filters = active_filters
+        # Flattener
+        all_filters_flat = []
+        # We also need a map to find them back.
+        # map_back[flat_index] = (tab_index, filter_index)
+        self.filter_map_back = {}
+        
+        flat_idx = 0
+        for tab_idx, filters in enumerate(self.filters):
+            for filter_idx, f in enumerate(filters):
+                if f.get("active", True):
+                    f_data = f.copy()
+                    # We add a unique ID to the filter data sent to worker? 
+                    # No, worker uses `active_filters` list index.
+                    # We just need to know that active_filters[i] corresponds to self.filters[tab][fil].
+                    
+                    self.filter_map_back[flat_idx] = (tab_idx, filter_idx)
+                    all_filters_flat.append(f_data)
+                    flat_idx += 1
+        
+        self.log_model.filters = all_filters_flat
         
         if not self.log_model.all_lines:
             return
@@ -885,24 +1194,57 @@ class LogAnalysisMainWindow(QMainWindow):
             self.filter_thread.stop()
             self.filter_thread.wait()
         
-        # Don't show status for background reflitering during monitoring to reduce spam? 
         if not self.is_monitoring:
             self.status_bar.showMessage("Refiltering...")
             
         self.filter_thread = FilterWorker(
             self.log_model.all_lines, 
-            active_filters, 
+            all_filters_flat, 
             self.log_model.show_only_filtered
         )
         self.filter_thread.finished_filtering.connect(self.on_filtering_finished)
         self.filter_thread.start()
 
-    def on_filtering_finished(self, visible_indices, match_count):
+    def on_filtering_finished(self, visible_indices, match_count, filter_counts=None):
         self.log_model.update_visible_indices(visible_indices)
+        self.update_stats()
+        
+        if filter_counts and hasattr(self, 'filter_map_back'):
+            # Reset all counts to 0 first?
+            # Creating a fresh map might be better.
+            
+            # Update the source data
+            for flat_idx, count in enumerate(filter_counts):
+                if flat_idx in self.filter_map_back:
+                    tab_idx, filter_idx = self.filter_map_back[flat_idx]
+                    if tab_idx < len(self.filters) and filter_idx < len(self.filters[tab_idx]):
+                        self.filters[tab_idx][filter_idx]['total_matches'] = count
+            
+            # Now update the UI for the CURRENT tab
+            current_tab_idx = self.filter_tabs.currentIndex()
+            if current_tab_idx >= 0 and current_tab_idx < len(self.filter_tab_lists):
+                 current_list = self.filter_tab_lists[current_tab_idx]
+                 current_filters = self.filters[current_tab_idx]
+                 
+                 for i in range(current_list.count()):
+                     item = current_list.item(i)
+                     widget = current_list.itemWidget(item)
+                     if widget and i < len(current_filters):
+                         # The widget has a reference to filter_data dict.
+                         # Does it update automatically? 
+                         # 'total_matches' key in dict is updated above.
+                         # We need to tell widget to redraw text.
+                         if 'total_matches' in current_filters[i]:
+                             widget.filter_data['total_matches'] = current_filters[i]['total_matches']
+                         else:
+                             widget.filter_data['total_matches'] = 0
+                             
+                         widget.update_display()
+        
         if self.is_monitoring:
-             self.status_bar.showMessage(f"Monitoring... ({len(self.log_model.all_lines)} lines)")
+             self.status_bar.showMessage(f"Monitoring...")
         else:
-             self.status_bar.showMessage(f"Showing {len(visible_indices)} lines ({match_count} matched)")
+             self.status_bar.showMessage(f"Refiltered complete.")
 
 # --- Child Classes ---
 class FilterItemWidget(QWidget):
@@ -1007,8 +1349,6 @@ class FilterDialog(QDialog):
         self.update_preview()
 
     def layout_ui(self):
-        from PyQt5.QtWidgets import QGroupBox, QFormLayout
-        
         main_layout = QVBoxLayout()
         
         # 1. Matching Group
