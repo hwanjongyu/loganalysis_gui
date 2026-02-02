@@ -1,12 +1,12 @@
-# LogAnaysisGUI
+# LogAnalysisGUI
 
 A cross-platform, Python-based graphical user interface for log file analysis.
 
 ## Introduction
 
-`LogAnaysisGUI` is a simple yet powerful tool for developers, testers, and support engineers to view, search, and analyze application logs. This project was born out of the need for a cross-platform log analysis tool.
+`LogAnalysisGUI` is a simple yet powerful tool for developers, testers, and support engineers to view, search, and analyze application logs. This project was born out of the need for a cross-platform log analysis tool.
 
-It is heavily inspired by the fantastic [TestAnalysisTool](https://textanalysistool.github.io/), which provides excellent functionality but is limited to the Windows operating system. `LogAnaysisGUI` aims to bring similar features to users on Windows, macOS, and Linux, all thanks to the power of Python and its versatile GUI libraries.
+It is heavily inspired by the fantastic [TestAnalysisTool](https://textanalysistool.github.io/), which provides excellent functionality but is limited to the Windows operating system. `LogAnalysisGUI` aims to bring similar features to users on Windows, macOS, and Linux, all thanks to the power of Python and its versatile GUI libraries.
 
 ## Features
 
@@ -20,7 +20,7 @@ It is heavily inspired by the fantastic [TestAnalysisTool](https://textanalysist
 
 ## Inspiration
 
-This project would not exist without the inspiration from [TestAnalysisTool](https://textanalysistool.github.io/). If you are a Windows user and need a feature-rich, native application, we highly recommend checking it out. `LogAnaysisGUI` is an attempt to recreate its useful core functionality in a cross-platform environment.
+This project would not exist without the inspiration from [TestAnalysisTool](https://textanalysistool.github.io/). If you are a Windows user and need a feature-rich, native application, we highly recommend checking it out. `LogAnalysisGUI` is an attempt to recreate its useful core functionality in a cross-platform environment.
 
 ## Requirements
 
@@ -32,7 +32,7 @@ This project would not exist without the inspiration from [TestAnalysisTool](htt
 1.  **Clone the repository:**
     ```bash
     git clone [https://github.com/hwanjongyu/loganalysis_gui.git](https://github.com/hwanjongyu/loganalysis_gui.git)
-    cd LogAnaysisGUI
+    cd LogAnalysisGUI
     ```
 
 2.  **(Recommended) Create a virtual environment:**
