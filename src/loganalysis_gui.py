@@ -1,5 +1,6 @@
 import sys
 import re
+import subprocess
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QAction, QFileDialog, QStatusBar,
     QVBoxLayout, QWidget, QDialog, QLineEdit, QCheckBox, QComboBox, 
@@ -8,7 +9,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView
 )
 from PyQt5.QtGui import QColor, QFont
-from PyQt5.QtCore import Qt, pyqtSignal, QAbstractListModel, QModelIndex, QThread, QSize
+from PyQt5.QtCore import Qt, pyqtSignal, QAbstractListModel, QModelIndex, QThread, QSize, QMutex
 
 # Shared Color Maps
 COLOR_MAP = {
@@ -26,13 +27,71 @@ TEXT_COLOR_MAP = {
     "Teal": "#008080", "Olive": "#808000", "Maroon": "#800000"
 }
 
-class FilterWorker(QThread):
-    """
-    Background worker to scan all lines and determine which ones match the filters.
-    Returns a list of indices that matched.
-    """
-    finished_filtering = pyqtSignal(list, int) # list of indices, match count
+class AdbWorker(QThread):
+    chunk_ready = pyqtSignal(list)
+    error_occurred = pyqtSignal(str)
 
+    def __init__(self):
+        super().__init__()
+        self.is_running = True
+        self.process = None
+
+    def run(self):
+        try:
+            # Start adb logcat
+            # -v threadtime provides standard timestamp format
+            self.process = subprocess.Popen(
+                ['adb', 'logcat', '-v', 'threadtime'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True, 
+                encoding='utf-8', 
+                errors='replace' # Handle binary garbage safely
+            )
+            proc = self.process
+            
+            buffer = []
+            while self.is_running:
+                line = proc.stdout.readline()
+                if not line and proc.poll() is not None:
+                    break
+                
+                if line:
+                    buffer.append(line)
+                
+                # Emit chunks to avoid swamping the UI event loop
+                if len(buffer) >= 100 or (buffer and not line):
+                    self.chunk_ready.emit(buffer)
+                    buffer = []
+            
+            # Clean up leftovers
+            if buffer:
+                self.chunk_ready.emit(buffer)
+                
+        except FileNotFoundError:
+            self.error_occurred.emit("ADB not found. Please ensure 'adb' is in your PATH.")
+        except Exception as e:
+            self.error_occurred.emit(f"ADB Error: {str(e)}")
+        finally:
+            self.terminate_process()
+
+    def stop(self):
+        self.is_running = False
+        self.terminate_process()
+    
+    def terminate_process(self):
+        if self.process:
+            try:
+                self.process.terminate()
+                self.process.kill() # Ensure it dies
+            except:
+                pass
+            self.process = None
+
+
+class FilterWorker(QThread):
+    finished_filtering = pyqtSignal(list, int) # list of indices, match count
+    
     def __init__(self, lines, filters, show_only_filtered):
         super().__init__()
         self.lines = lines
@@ -44,7 +103,7 @@ class FilterWorker(QThread):
         visible_indices = []
         match_count = 0
         
-        # Pre-compile regexes for performance
+        # Pre-compile regexes
         active_filters = []
         for f in self.filters:
             if f.get("active", True):
@@ -57,21 +116,6 @@ class FilterWorker(QThread):
                         f_data["compiled_re"] = None
                 active_filters.append(f_data)
 
-        # If no filters are active/exist
-        if not active_filters:
-            # If show_only_filtered is True, we show nothing? 
-            # Or usually "Show Only Filtered" means "Show matches". If no filters, nothing matches.
-            # But the logic in original app was: if valid filters exist, filter. 
-            # If no filters, showing all is usually simpler, OR showing nothing.
-            # Let's align with typical behavior: No filters defined -> Show everything?
-            # Or No filters -> Show everything regardless of "Show Only Filtered" toggle?
-            # Reverting to original logic: If "filters exist", we filter. If list is empty -> Show all.
-            pass
-
-        # Optimization: reverse active filters once for priority logic check
-        # But for 'inclusion', any match allows it to be shown (unless excluded).
-        # We need to loop line by line.
-        
         count = len(self.lines)
         for i in range(count):
             if not self.is_running:
@@ -79,18 +123,13 @@ class FilterWorker(QThread):
 
             line = self.lines[i]
             
-            # Logic:
-            # If no filters active: Show all loop
             if not active_filters:
                 visible_indices.append(i)
                 continue
 
-            # Check matches
             matched = False
             for ftr in reversed(active_filters):
                 is_match = False
-                
-                # Check Match
                 if ftr["regex"]:
                     if ftr["compiled_re"] and ftr["compiled_re"].search(line):
                         is_match = True
@@ -105,20 +144,15 @@ class FilterWorker(QThread):
                 if ftr["exclude"]:
                     if is_match:
                         matched = False
-                        break # Explicitly excluded, stop checking
+                        break 
                 else:
                     if is_match:
                         matched = True
-                        # Continue checking? 
-                        # In painting logic, we care about the LAST match for color.
-                        # In visibility logic, we just need ONE match to show it.
-                        # Exclude overrides all.
-            
+                        
             if matched:
                 match_count += 1
                 visible_indices.append(i)
             elif not self.show_only_filtered:
-                # If we are NOT showing only filtered, we show unmatched lines too
                 visible_indices.append(i)
         
         self.finished_filtering.emit(visible_indices, match_count)
@@ -129,11 +163,11 @@ class FilterWorker(QThread):
 class LogModel(QAbstractListModel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.all_lines = [] # Raw string data
-        self.visible_indices = [] # Indices of lines to show
+        self.all_lines = [] 
+        self.visible_indices = [] 
         self.filters = []
         self.show_line_numbers = True
-        self.show_only_filtered = True # Default state
+        self.show_only_filtered = True
         self.font = QFont("Monospace")
         
     def rowCount(self, parent=QModelIndex()):
@@ -151,7 +185,6 @@ class LogModel(QAbstractListModel):
         line_text = self.all_lines[real_idx]
 
         if role == Qt.DisplayRole:
-            # Strip newline for display
             clean_text = line_text.rstrip('\r\n')
             if self.show_line_numbers:
                 return f"{real_idx + 1:6d} | {clean_text}"
@@ -161,8 +194,6 @@ class LogModel(QAbstractListModel):
             return self.font
 
         if role == Qt.BackgroundRole or role == Qt.ForegroundRole:
-            # Determine color dynamically for valid view items
-            # This is fast enough for the viewport (e.g. 50 items)
             return self._get_color(line_text, role)
 
         return None
@@ -170,17 +201,9 @@ class LogModel(QAbstractListModel):
     def _get_color(self, line, role):
         if not self.filters:
             return None
-
-        # Filter logic again for coloring
-        # We process from bottom to top (priority)
-        # The topmost filter in the list (last in iteration? no reversed)
-        # In UI list: Index 0 is top. We want Top to override Bottom? 
-        # Usually in lists, the item on top is highest priority.
-        # Original code reversed the list. Let's stick to that.
-        
+            
         bg_result = None
         fg_result = None
-        
         matched_any = False
 
         for ftr in reversed(self.filters):
@@ -188,9 +211,7 @@ class LogModel(QAbstractListModel):
                 continue
 
             is_match = False
-            # Quick check
             if ftr["regex"]:
-                # We should re-compile or cache. `re` module caches internally.
                 try:
                     flags = 0 if ftr["case_sensitive"] else re.IGNORECASE
                     if re.search(ftr["text"], line, flags):
@@ -206,18 +227,16 @@ class LogModel(QAbstractListModel):
             
             if ftr["exclude"]:
                 if is_match:
-                    return None # Excluded lines have no special color (or shouldn't be here)
+                    return None 
             else:
                 if is_match:
                     matched_any = True
-                    # Set colors
                     if ftr["bg_color"] != "None":
                         bg_result = ftr["bg_color"]
                     if ftr.get("text_color", "None") != "None":
                         fg_result = ftr["text_color"]
         
         if not matched_any:
-            # If line is shown but not matched (i.e. context), make it gray?
             if role == Qt.ForegroundRole:
                 return QColor("#808080")
             return None
@@ -239,6 +258,76 @@ class LogModel(QAbstractListModel):
         self.beginResetModel()
         self.visible_indices = indices
         self.endResetModel()
+    
+    def clear(self):
+        self.beginResetModel()
+        self.all_lines = []
+        self.visible_indices = []
+        self.endResetModel()
+        
+    def append_chunk(self, lines):
+        start_real_idx = len(self.all_lines)
+        self.all_lines.extend(lines)
+        
+        # Calculate visibility for new lines immediately
+        new_indices = []
+        
+        has_active_filters = any(f.get("active", True) for f in self.filters)
+        
+        for i, line in enumerate(lines):
+            real_idx = start_real_idx + i
+            
+            if not has_active_filters:
+                new_indices.append(real_idx)
+                continue
+                
+            matched = False
+            is_excluded = False
+            
+            # Simple check consistent with FilterWorker logic
+            # We iterate reversed to check match logic, but exclude always wins
+            for ftr in reversed(self.filters):
+                if not ftr.get("active", True):
+                    continue
+                    
+                is_match = False
+                if ftr["regex"]:
+                    try:
+                        flags = 0 if ftr["case_sensitive"] else re.IGNORECASE
+                        if re.search(ftr["text"], line, flags):
+                            is_match = True
+                    except: pass
+                else:
+                    if ftr["case_sensitive"]:
+                        if ftr["text"] in line:
+                            is_match = True
+                    else:
+                        if ftr["text"].lower() in line.lower():
+                            is_match = True
+                
+                if ftr["exclude"]:
+                    if is_match:
+                        matched = False
+                        is_excluded = True
+                        break 
+                else:
+                    if is_match:
+                        matched = True
+            
+            if not is_excluded:
+                if matched:
+                    new_indices.append(real_idx)
+                elif not self.show_only_filtered:
+                    new_indices.append(real_idx)
+
+        # Notify view
+        if new_indices:
+            first_row_idx = len(self.visible_indices)
+            self.beginInsertRows(QModelIndex(), first_row_idx, first_row_idx + len(new_indices) - 1)
+            self.visible_indices.extend(new_indices)
+            self.endInsertRows()
+            return True # Indicates data was added
+        return False
 
 class LogAnalysisMainWindow(QMainWindow):
     def __init__(self):
@@ -252,8 +341,9 @@ class LogAnalysisMainWindow(QMainWindow):
         self.create_menu()
         self.init_ui()
         
-        # Filtering Thread
         self.filter_thread = None
+        self.adb_thread = None
+        self.is_monitoring = False
 
     def create_menu(self):
         menubar = self.menuBar()
@@ -298,6 +388,12 @@ class LogAnalysisMainWindow(QMainWindow):
         show_line_numbers_action.setChecked(True)
         show_line_numbers_action.triggered.connect(self.toggle_line_numbers)
         view_menu.addAction(show_line_numbers_action)
+        
+        # Monitor Menu
+        monitor_menu = menubar.addMenu("Monitor")
+        self.adb_monitor_action = QAction("Start ADB Logcat", self)
+        self.adb_monitor_action.triggered.connect(self.toggle_adb_monitoring)
+        monitor_menu.addAction(self.adb_monitor_action)
 
         # Tabs menu
         tabs_menu = menubar.addMenu("Tabs")
@@ -323,9 +419,8 @@ class LogAnalysisMainWindow(QMainWindow):
         help_menu.addAction(about_action)
 
     def init_ui(self):
-        # Replaced QTextEdit with QListView
         self.log_view = QListView()
-        self.log_view.setUniformItemSizes(True) # Performance Optimization
+        self.log_view.setUniformItemSizes(True) 
         self.log_view.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.log_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
         
@@ -354,6 +449,57 @@ class LogAnalysisMainWindow(QMainWindow):
         container.setLayout(layout)
         self.setCentralWidget(container)
 
+    def toggle_adb_monitoring(self):
+        if not self.is_monitoring:
+            # Start Monitoring
+            self.log_model.clear() # Clear existing logs
+            
+            # Update filter state in model before starting (usually done by apply_filters but let's ensure)
+            active_filters = []
+            for filters in self.filters:
+                for f in filters:
+                    if f.get("active", True):
+                        active_filters.append(f)
+            self.log_model.filters = active_filters
+            
+            self.adb_thread = AdbWorker()
+            self.adb_thread.chunk_ready.connect(self.on_adb_chunk)
+            self.adb_thread.error_occurred.connect(self.on_adb_error)
+            self.adb_thread.start()
+            
+            self.is_monitoring = True
+            self.adb_monitor_action.setText("Stop ADB Logcat")
+            self.status_bar.showMessage("Monitoring ADB Logcat...")
+        else:
+            # Stop Monitoring
+            if self.adb_thread:
+                self.adb_thread.stop()
+                self.adb_thread.wait()
+                self.adb_thread = None
+            
+            self.is_monitoring = False
+            self.adb_monitor_action.setText("Start ADB Logcat")
+            self.status_bar.showMessage(f"Monitoring stopped. Total lines: {len(self.log_model.all_lines)}")
+
+    def on_adb_chunk(self, lines):
+        was_at_bottom = False
+        # Autosroll Check: if scrollbar is at max, keep it at max
+        scrollbar = self.log_view.verticalScrollBar()
+        if scrollbar.value() == scrollbar.maximum():
+            was_at_bottom = True
+            
+        data_added = self.log_model.append_chunk(lines)
+        
+        if data_added and was_at_bottom:
+            self.log_view.scrollToBottom()
+            
+        # Update status periodically? Or just rely on the count
+        # self.status_bar.showMessage(f"Monitoring... {len(self.log_model.visible_indices)} shown")
+
+    def on_adb_error(self, message):
+        self.toggle_adb_monitoring() # Stop monitoring
+        QMessageBox.critical(self, "ADB Error", message)
+
     def rename_filter_tab(self):
         idx = self.filter_tabs.currentIndex()
         if idx >= 0:
@@ -365,9 +511,9 @@ class LogAnalysisMainWindow(QMainWindow):
     def show_about_dialog(self):
         QMessageBox.about(self, "About LogAnalysis GUI",
                           "<b>LogAnalysis GUI</b><br>"
-                          "Version 0.0.3 (Performance)<br>"
+                          "Version 0.0.4 (ADB Support)<br>"
                           "Developed by: Drew Yu<br>"
-                          "Optimized for large files using QListView.")
+                          "Optimized for large files and ADB streaming.")
 
     def add_filter_tab(self):
         filter_list = QListWidget()
@@ -411,7 +557,7 @@ class LogAnalysisMainWindow(QMainWindow):
 
     def toggle_line_numbers(self, checked):
         self.log_model.show_line_numbers = checked
-        self.log_model.layoutChanged.emit() # Force refresh
+        self.log_model.layoutChanged.emit()
 
     def toggle_show_only_filtered(self, checked):
         self.log_model.show_only_filtered = checked
@@ -427,6 +573,9 @@ class LogAnalysisMainWindow(QMainWindow):
         item.setData(Qt.UserRole, filter_data)
 
     def open_file(self):
+        if self.is_monitoring:
+            self.toggle_adb_monitoring() # Stop monitoring if opening file
+
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Open Log File",
@@ -437,7 +586,6 @@ class LogAnalysisMainWindow(QMainWindow):
             self.status_bar.showMessage("Loading file...")
             QApplication.setOverrideCursor(Qt.WaitCursor)
             try:
-                # Read all lines
                 with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
                     lines = f.readlines()
                 self.log_model.set_lines(lines)
@@ -559,26 +707,30 @@ class LogAnalysisMainWindow(QMainWindow):
                 self.status_bar.showMessage(f"Error loading filters: {str(e)}")
 
     def apply_filters(self):
-        if not self.log_model.all_lines:
-            return
-
-        # Combine active filters
+        # Determine active filters
         active_filters = []
         for filters in self.filters:
             for f in filters:
                 if f.get("active", True):
                     active_filters.append(f)
         
-        # Pass filters to model so it can paint
         self.log_model.filters = active_filters
         
-        # Stop existing thread if running
+        # If monitoring, we don't re-run FilterWorker on the whole file live every keypress?
+        # Actually we SHOULD, to update the view of the past logs.
+        # But we must be careful not to conflict with AdbWorker appending.
+        # For simplicity: If monitoring, we rely on the realtime append check? 
+        # No, if user adds a filter during monitoring, they expect it to apply to old logs too.
+        # So we DO need to re-run filtering on self.log_model.all_lines.
+        
+        if not self.log_model.all_lines:
+            return
+        
         if self.filter_thread and self.filter_thread.isRunning():
             self.filter_thread.stop()
             self.filter_thread.wait()
         
-        # Start new filtering thread
-        self.status_bar.showMessage("Filtering...")
+        self.status_bar.showMessage("Refiltering...")
         self.filter_thread = FilterWorker(
             self.log_model.all_lines, 
             active_filters, 
@@ -589,14 +741,10 @@ class LogAnalysisMainWindow(QMainWindow):
 
     def on_filtering_finished(self, visible_indices, match_count):
         self.log_model.update_visible_indices(visible_indices)
-        self.status_bar.showMessage(f"Showing {len(visible_indices)} lines ({match_count} matched)")
-        
-        # Update match counts in UI (approximation, since we don't count per-filter in this condensed loop yet)
-        # Note: The high-perf worker only counts total matches or we'd need a more complex return structure.
-        # For now, we skip updating individual filter match counts to save performance? 
-        # Or we can make the worker return a dict of {filter_idx: count}. 
-        # For simplicity in this step, we'll accept that individual counts might not update live in high-perf mode.
-        pass
+        if self.is_monitoring:
+             self.status_bar.showMessage(f"Monitoring... ({match_count} visible)")
+        else:
+             self.status_bar.showMessage(f"Showing {len(visible_indices)} lines ({match_count} matched)")
 
 class FilterItemWidget(QWidget):
     filter_toggled = pyqtSignal(dict, bool)

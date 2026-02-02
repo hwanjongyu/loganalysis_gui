@@ -1,51 +1,67 @@
-# Implementation Plan - High Performance Log Viewer
+# Implementation Plan - ADB Logcat Monitoring
 
-The current application crashes with large files because `QTextEdit` attempts to render the entire file layout in memory as HTML. This is extremely memory-intensive. To support large files (e.g., 100MB+, millions of lines), we must switch to a **Model/View Architecture**.
+This plan outlines the addition of real-time `adb logcat` monitoring to the LogAnalysisGUI. This feature allows users to connect to an Android device and stream logs directly into the application, maintaining existing filtering capabilities.
 
-## Problem Analysis
-- **Current State**: `QTextEdit` loads all lines as a single HTML blob.
-- **Bottleneck**: The HTML layout engine creates heavy objects for every DOM element (row/cell). A 50MB log file can easily consume 1GB+ of RAM when converted to styled HTML table rows.
-- **Error**: `Exit code 137` indicates the OS killed the process due to Out Of Memory (OOM).
+## User Requirements
+1.  **Source**: Stream from `adb logcat`.
+2.  **Action**: "Monitoring" menu toggle.
+3.  **Behavior**:
+    *   Clear existing logs when monitoring starts.
+    *   Retain and apply current filter configurations to the live stream.
 
-## Proposed Architecture: Model/View
+## Architectural Changes
 
-We will replace `QTextEdit` with `QListView` backed by a custom `QAbstractListModel`. This enables **UI Virtualization**—only the lines currently visible on the screen are rendered.
+The current architecture is optimized for static file loading (bulk filtering). We need to adapt it for **Stream Processing**.
 
-### 1. Component Migration
+### 1. New Component: `AdbWorker`
+A `QThread` subclass responsible for:
+- Executing `adb logcat -v threadtime` as a subprocess.
+- Reading `stdout` line-by-line in real-time.
+- Emitting a generic `new_lines_ready(list)` signal (batching lines is better for UI performance than emitting every single line).
 
-| Current Component | New Component | Benefit |
-| :--- | :--- | :--- |
-| `QTextEdit` | `QListView` | Renders only visible items; minimal memory footprint. |
-| `f.readlines()` | `QAbstractListModel` | Keeps data as raw Python strings; no HTML overhead. |
-| HTML Styling | `QStyledItemDelegate` | Paints colors/text directly to the canvas on-the-fly. |
+### 2. LogModel Enhancements (`Stream Mode`)
+The `LogModel` needs a specific method to handle incremental updates without re-scanning the entire dataset.
 
-### 2. Implementation Details
+- **Current**: `set_lines()` (Replace all), `update_visible_indices()` (Replace view).
+- **New**: `append_lines(lines)`
+    - This method will take a batch of new lines.
+    - It will run the *current active filters* against these new lines specifically.
+    - It will append to `self.all_lines`.
+    - It will append matching indices to `self.visible_indices`.
+    - It will emit `layoutChanged` or `rowsInserted` to update the View.
 
-#### A. The Log Model (`LogModel`)
-A custom subclass of `QAbstractListModel`.
-- **Data Source**: Holds `self.lines` (list of strings) and `self.filtered_indices` (list of integers).
-- **Lazy Loading**: When the view asks for row 50, the model looks up `real_index = filtered_indices[50]` and returns `lines[real_index]`.
-- **Memory Efficiency**: 1 million lines of text consumes only the memory required for the raw strings (~100MB for a 100MB file), rather than GBs for widget structures.
+### 3. UI Integration
+- **Menu**: Add `Monitor` -> `Start ADB Logcat`.
+- **State Management**:
+    - When `Start` is clicked:
+        1.  Check for ADB availability (optional but good).
+        2.  Call `LogModel.clear()` (Need to implement this).
+        3.  Start `AdbWorker`.
+        4.  Change Menu Text to "Stop ADB Logcat".
+    - When `Stop` is clicked:
+        1.  Stop `AdbWorker`.
+        2.  Reset Menu Text.
 
-#### B. The Delegate (`LogDelegate`)
-A custom subclass of `QStyledItemDelegate`.
-- Handles the drawing of text and background colors.
-- Inteprets the filter rules (regex/colors) at paint time.
-- Supports high-performance text rendering without HTML parsing.
+### 4. Handling Filter Changes
+If the user modifies filters while streaming:
+- We continue to use the existing `apply_filters()` logic.
+- Takes the *entire* `all_lines` (which now includes the streamed history), re-runs the full `FilterWorker` in the background, and updates the view. This is consistent with static file behavior and correct.
 
-#### C. Filtering Logic
-- Instead of hiding UI rows (slow), we regenerate the `filtered_indices` list in the model.
-- **Multithreading**: Running the filter over 1 million lines can take 1-2 seconds in Python. We will run the filter logic in a background thread to prevent UI freezing.
+## Step-by-Step Implementation
 
-### 3. Step-by-Step Refactor
+1.  **Define `AdbWorker`**: Create the thread class to manage the subprocess.
+2.  **Update `LogModel`**:
+    - Add `clear()` method.
+    - Add `append_chunk(lines)` method.
+    - Implement the "incremental filter check" logic within `append_chunk` to decide which of the new lines are visible.
+3.  **Update `LogAnalysisMainWindow`**:
+    - Add the "Monitor" menu.
+    - Add `toggle_adb_monitoring()` slot.
+    - Connect `AdbWorker` signals to `LogModel.append_chunk`.
+4.  **Auto-Scroll**: Ensure the `QListView` scrolls to the bottom when new logs arrive (optional but expected behavior for monitoring).
 
-1.  **Skeleton**: Create `LogModel` and `LogDelegate` classes.
-2.  **View Swap**: Replace `QTextEdit` in `LogAnalysisMainWindow` with `QListView`.
-3.  **Data Binding**: Connect the file loader to populate `LogModel`.
-4.  **Styling**: Port the color logic from `apply_filters` to the `LogDelegate`.
-5.  **Filtering**: Implement background filtering that updates the model's `filtered_indices`.
-
-## Verification Plan
-1.  **Load Test**: Open a 200MB+ log file.
-2.  **Memory Monitor**: Ensure RAM usage stays proportional to file size (not 10x).
-3.  **Scroll Performance**: Ensure 60fps scrolling efficiency.
+## Verification
+1.  **Refactor Check**: Ensure the new Streaming logic doesn't break the high-performance static file loading.
+2.  **Live Test**: Run with a connected Emulator or Device.
+3.  **Filter Test**: Add a filter (e.g., "ActivityManager") while streaming and verify only those lines appear.
+4.  **Clear Test**: Stop and Start again to ensure the buffer flushes.
