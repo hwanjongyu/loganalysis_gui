@@ -1,6 +1,8 @@
 import sys
 import re
 import subprocess
+import os
+import json
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QAction, QFileDialog, QStatusBar,
     QVBoxLayout, QWidget, QDialog, QLineEdit, QCheckBox, QComboBox, 
@@ -1049,44 +1051,72 @@ class LogAnalysisMainWindow(QMainWindow):
         return super().eventFilter(source, event)
 
     def save_filters(self):
-        import json
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Filters", "filters.json", "JSON Files (*.json);;All Files (*)")
+        # Only save selected tab
+        idx = self.filter_tabs.currentIndex()
+        if idx < 0: return
+        
+        tab_name = self.filter_tabs.tabText(idx)
+        default_name = f"{tab_name}.json"
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Current Tab Filters", default_name, 
+            "JSON Files (*.json);;All Files (*)"
+        )
+        
         if file_path:
             try:
-                data = []
-                for idx, filters in enumerate(self.filters):
-                    tab_name = self.filter_tabs.tabText(idx)
-                    data.append({
-                        "name": tab_name,
-                        "filters": filters
-                    })
+                filters_to_save = self.filters[idx]
+                # Save as a dictionary containing the name and filters
+                data = {
+                    "name": tab_name,
+                    "filters": filters_to_save
+                }
                 with open(file_path, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
-                self.status_bar.showMessage(f"Filters saved to {file_path}")
+                
+                self.status_bar.showMessage(f"Filters from '{tab_name}' saved to {file_path}")
             except Exception as e:
                 self.status_bar.showMessage(f"Error saving filters: {str(e)}")
 
     def load_filters(self):
-        import json
-        file_path, _ = QFileDialog.getOpenFileName(self, "Load Filters", "filters.json", "JSON Files (*.json);;All Files (*)")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Filters to Current Tab", "", 
+            "JSON Files (*.json);;All Files (*)"
+        )
         if file_path:
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     loaded = json.load(f)
+                
+                loaded_set = []
+                tab_name = None
+                
+                # Handle different JSON structures
+                if isinstance(loaded, dict):
+                    # New single-tab structure: {"name": "...", "filters": [...]}
+                    loaded_set = loaded.get('filters', [])
+                    tab_name = loaded.get('name')
+                elif isinstance(loaded, list):
+                    if len(loaded) > 0 and isinstance(loaded[0], dict) and 'filters' in loaded[0]:
+                        # Legacy multi-tab structure (take the first one)
+                        # Or if we saved a list with one dict previously
+                        loaded_set = loaded[0]['filters']
+                        tab_name = loaded[0].get('name')
+                    else:
+                        # Even older simple list format
+                        loaded_set = loaded
+                
+                if not loaded_set and not isinstance(loaded_set, list):
+                    self.status_bar.showMessage("Invalid filter file format.")
+                    return
+
                 filter_list, filters = self.current_filter_list()
                 filter_list.clear()
                 filters.clear()
                 
-                if loaded and isinstance(loaded, list) and isinstance(loaded[0], dict) and 'filters' in loaded[0]:
-                    loaded_set = loaded[0]['filters']
-                    tab_name = loaded[0].get('name')
-                    if tab_name:
-                        idx = self.filter_tabs.currentIndex()
-                        self.filter_tabs.setTabText(idx, tab_name)
-                elif loaded and isinstance(loaded, list) and loaded and isinstance(loaded[0], list):
-                    loaded_set = loaded[0]
-                else:
-                    loaded_set = loaded
+                if tab_name:
+                    idx = self.filter_tabs.currentIndex()
+                    self.filter_tabs.setTabText(idx, tab_name)
                 
                 for filter_data in loaded_set:
                     item = QListWidgetItem()
@@ -1097,8 +1127,9 @@ class LogAnalysisMainWindow(QMainWindow):
                     widget = FilterItemWidget(filter_data)
                     widget.filter_toggled.connect(self._on_filter_toggled)
                     filter_list.setItemWidget(item, widget)
+                
                 self.apply_filters()
-                self.status_bar.showMessage(f"Filters loaded from {file_path}")
+                self.status_bar.showMessage(f"Filters loaded into current tab from {file_path}")
             except Exception as e:
                 self.status_bar.showMessage(f"Error loading filters: {str(e)}")
 
