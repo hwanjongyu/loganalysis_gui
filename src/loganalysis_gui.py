@@ -633,6 +633,13 @@ class LogAnalysisMainWindow(QMainWindow):
         find_action.triggered.connect(self.show_find_dialog)
         edit_menu.addAction(find_action)
 
+        edit_menu.addSeparator()
+        copy_action = QAction("Copy", self)
+        copy_action.setShortcut("Ctrl+C")
+        copy_action.triggered.connect(self.copy_selection)
+        edit_menu.addAction(copy_action)
+        self.copy_action = copy_action
+
         # View menu
         view_menu = menubar.addMenu("View")
         show_only_filtered_action = QAction("Show Only Filtered Lines", self, checkable=True)
@@ -735,6 +742,10 @@ class LogAnalysisMainWindow(QMainWindow):
         
         self.log_model = LogModel()
         self.log_view.setModel(self.log_model)
+
+        # Add selection context menu
+        self.log_view.setContextMenuPolicy(Qt.ActionsContextMenu)
+        self.log_view.addAction(self.copy_action)
 
         self.filter_tabs = QTabWidget()
         self.filter_tabs.setTabBarAutoHide(False)
@@ -864,6 +875,28 @@ class LogAnalysisMainWindow(QMainWindow):
             
         self.find_dialog.set_status("Not found")
 
+    def copy_selection(self):
+        selection_model = self.log_view.selectionModel()
+        selected_indexes = selection_model.selectedRows()
+        
+        if not selected_indexes:
+            return
+
+        # Sort indexes to copy in correct order
+        selected_indexes.sort(key=lambda x: x.row())
+        
+        lines = []
+        for idx in selected_indexes:
+            # Data role gives exactly what's displayed (respecting 'show line numbers')
+            text = self.log_model.data(idx, Qt.DisplayRole)
+            if text:
+                lines.append(text)
+        
+        if lines:
+            clipboard = QApplication.clipboard()
+            clipboard.setText("\n".join(lines))
+            self.status_bar.showMessage(f"Copied {len(lines)} lines to clipboard", 3000)
+
 
     def toggle_adb_monitoring(self):
         style = self.style()
@@ -963,6 +996,7 @@ class LogAnalysisMainWindow(QMainWindow):
         QMessageBox.information(self, "Shortcuts",
                                 "<b>Keyboard Shortcuts</b><br><br>"
                                 "<b>Ctrl+O</b>: Open File<br>"
+                                "<b>Ctrl+C</b>: Copy Selection<br>"
                                 "<b>Ctrl+F</b>: Find<br>"
                                 "<b>Ctrl+Shift+F</b>: Add Filter<br>"
                                 "<b>Ctrl+T</b>: Add Tab<br>"
