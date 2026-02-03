@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QListWidgetItem, QTabWidget, QMessageBox, QInputDialog, QListView,
     QAbstractItemView, QDockWidget, QToolBar, QStyle, QGroupBox, QFormLayout
 )
-from PyQt5.QtGui import QColor, QFont, QIcon, QPalette
+from PyQt5.QtGui import QColor, QFont, QIcon, QPalette, QPixmap
 from PyQt5.QtCore import Qt, pyqtSignal, QAbstractListModel, QModelIndex, QThread, QSize, QMutex
 
 # Shared Color Maps
@@ -1293,37 +1293,52 @@ class FilterDialog(QDialog):
         # Colors
         self.text_color = QComboBox()
         self.text_color.addItem("None")
-        self.text_color.addItems(sorted([k for k in TEXT_COLOR_MAP.keys()]))
+        for name in sorted(TEXT_COLOR_MAP.keys()):
+            color_hex = TEXT_COLOR_MAP[name]
+            pixmap = QPixmap(16, 16)
+            pixmap.fill(QColor(color_hex))
+            self.text_color.addItem(QIcon(pixmap), name)
         
         self.bg_color = QComboBox()
         self.bg_color.addItem("None")
-        self.bg_color.addItems(sorted([k for k in COLOR_MAP.keys()]))
+        for name in sorted(COLOR_MAP.keys()):
+            color_hex = COLOR_MAP[name]
+            pixmap = QPixmap(16, 16)
+            pixmap.fill(QColor(color_hex))
+            self.bg_color.addItem(QIcon(pixmap), name)
         
         # Preview
         self.preview_lbl = QLabel("Preview Text")
         self.preview_lbl.setAlignment(Qt.AlignCenter)
-        self.preview_lbl.setStyleSheet("border: 1px solid #ccc; padding: 10px; font-family: Monospace;")
+        self.preview_lbl.setFixedHeight(50)
+        self.preview_lbl.setStyleSheet("border: 1px solid #555; padding: 10px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 11pt;")
         
         # Buttons
         self.ok_btn = QPushButton("OK")
+        self.ok_btn.setDefault(True)
         self.cancel_btn = QPushButton("Cancel")
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
         
         # Connect signals for preview
         self.text_input.textChanged.connect(self.update_preview)
+        self.case_sensitive.toggled.connect(self.update_preview)
+        self.regex.toggled.connect(self.update_preview)
+        self.exclude.toggled.connect(self.update_preview)
         self.text_color.currentTextChanged.connect(self.update_preview)
         self.bg_color.currentTextChanged.connect(self.update_preview)
         
         self.layout_ui()
         
         if filter_data:
-            self.text_input.setText(filter_data["text"])
-            self.case_sensitive.setChecked(filter_data["case_sensitive"])
-            self.regex.setChecked(filter_data["regex"])
-            self.exclude.setChecked(filter_data["exclude"])
-            idx = self.bg_color.findText(filter_data["bg_color"])
+            self.text_input.setText(filter_data.get("text", ""))
+            self.case_sensitive.setChecked(filter_data.get("case_sensitive", False))
+            self.regex.setChecked(filter_data.get("regex", False))
+            self.exclude.setChecked(filter_data.get("exclude", False))
+            
+            idx = self.bg_color.findText(filter_data.get("bg_color", "None"))
             if idx >= 0: self.bg_color.setCurrentIndex(idx)
+            
             idx = self.text_color.findText(filter_data.get("text_color", "None"))
             if idx >= 0: self.text_color.setCurrentIndex(idx)
             
@@ -1373,15 +1388,25 @@ class FilterDialog(QDialog):
         text = self.text_input.text()
         if not text: text = "Preview Text"
         
+        # Add visual markers for options
+        if self.exclude.isChecked(): text = f" [EXCL] {text}"
+        if self.regex.isChecked(): text = f" [REGEX] {text}"
+        if self.case_sensitive.isChecked(): text = f" [CASE] {text}"
+            
         bg_name = self.bg_color.currentText()
         text_name = self.text_color.currentText()
         
-        style = "border: 1px solid #ccc; padding: 10px; font-family: Monospace;"
+        style = "border: 1px solid #555; padding: 10px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 11pt;"
         
         if bg_name != "None":
             style += f"background-color: {COLOR_MAP.get(bg_name, bg_name)};"
+        else:
+            style += "background-color: transparent;"
+            
         if text_name != "None":
             style += f"color: {TEXT_COLOR_MAP.get(text_name, text_name)};"
+        else:
+            style += "color: #e0e0e0;" # Default for preview
             
         self.preview_lbl.setStyleSheet(style)
         self.preview_lbl.setText(text)
