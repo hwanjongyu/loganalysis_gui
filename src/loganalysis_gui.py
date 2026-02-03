@@ -168,12 +168,11 @@ class FilterWorker(QThread):
         visible_indices = []
         match_count = 0
         
-        # We need a better way to track per-filter matches.
-        # Let's initialize a count list matching the size of self.filters
+        # Initialize counts for ALL filters passed in
         filter_counts = [0] * len(self.filters)
         
-        # Prepare active filters with their original index
-        prepared_filters = []
+        # Pre-compile active filters for speed
+        active_filters = []
         for i, f in enumerate(self.filters):
             if f.get("active", True):
                 f_data = f.copy()
@@ -184,7 +183,7 @@ class FilterWorker(QThread):
                         f_data["compiled_re"] = re.compile(f["text"], flags)
                     except re.error:
                         f_data["compiled_re"] = None
-                prepared_filters.append(f_data)
+                active_filters.append(f_data)
 
         count = len(self.lines)
         for i in range(count):
@@ -193,83 +192,21 @@ class FilterWorker(QThread):
 
             line = self.lines[i]
             
-            if not prepared_filters:
+            # If no active filters, line is visible if NOT show_only_filtered
+            # Consistent with append_chunk: show everything if no filters
+            if not active_filters:
                 visible_indices.append(i)
                 continue
 
-            matched = False
-            
-            # Check filters (Reversed priority for coloring/logic, but for counting we want to know WHICH ones matched)
-            # Logic: If EXCLUDE matches, the line is gone.
-            # If INCLUDE matches, the line is kept.
-            
-            # The previous logic was: last matching match decides color.
-            # But for "match count", if a line is excluded, does it count as a match for the exclude filter? Yes.
-            # If a line matches 3 includes, does it count for all 3? Yes.
-            
-            # Let's iterate ALL active filters to count matches
-            # But the visibility logic (reversed loop) needs to be preserved.
-            
-            # Optimization: 
-            # 1. Determine visibility
-            # 2. Update counts for all matching filters
-            
-            # Visibility PASS
-            # We must stick to the exact logic we had before for consistency
-            
-            # Let's separate "Counting" from "Visibility Logic"? 
-            # It's faster to do it in one pass.
-            
-            is_visible_line = False
-            line_matched_any_include = False
-            
-            # We iterate reversed to determine the "Winning" filter for color/exclusion logic
-            for ftr in reversed(prepared_filters):
-                is_match = False
-                if ftr["regex"]:
-                    if ftr["compiled_re"] and ftr["compiled_re"].search(line):
-                        is_match = True
-                else:
-                    if ftr["case_sensitive"]:
-                        if ftr["text"] in line:
-                            is_match = True
-                    else:
-                        if ftr["text"].lower() in line.lower():
-                            is_match = True
-                
-                if is_match:
-                    # Increment count for this filter
-                    filter_counts[ftr['original_index']] += 1
-                    
-                    # Logic
-                    if not is_visible_line: # If we haven't decided it's excluded yet...
-                        if ftr["exclude"]:
-                            # If it matches an exclude, it wipes out previous matches (since we are reversed)
-                            # Wait, previous logic:
-                            # reversed loop. 
-                            # If Exclude matches -> matched=False, break.
-                            # If Include matches -> matched=True.
-                            # So Exclude has highest priority if it appears later in the list (higher index).
-                            matched = False
-                            break # Hard stop for exclusion
-                        else:
-                            matched = True
-                            # Continue to count other matches?
-                            # The original code did `if matched: break` ?? NO.
-                            # Original code: 
-                            # if exclude: matched=False; break
-                            # else: matched=True (and continue loop? Default break was not there for include)
-                            # Actually, `if is_match: matched = True`. It keeps going.
-                            # So an earlier exclude (lower index) could be overridden by a later include?
-                            # No, reversed(active_filters). The last filter in list (highest index) is checked first.
-                            pass
-            
-            # Re-implementing original logic exactly coupled with counting is tricky without duplicating regex checks.
-            # Let's just do checks once per filter.
-            
             this_line_matches = [] # list of original_indices that matched
+            matched_decision = False
             
-            for ftr in prepared_filters: # Forward order is easier for mental model, but let's stick to simple individual checks first
+            # Visibility and Counting Pass
+            # We must check all active filters to get accurate counts, 
+            # but priority is reversed for the visibility decision.
+            
+            # Determine matches for all active filters
+            for ftr in active_filters:
                 is_match = False
                 if ftr["regex"]:
                     if ftr["compiled_re"] and ftr["compiled_re"].search(line):
@@ -286,55 +223,17 @@ class FilterWorker(QThread):
                     filter_counts[ftr['original_index']] += 1
                     this_line_matches.append(ftr)
             
-            # Now decide visibility based on matches
-            final_verdict = False
-            if not this_line_matches:
-                 pass # No filters matched
-            else:
-                # Iterate matches in reverse order of definition (Priority)
+            # Decide visibility from the matches found (Highest index filter wins)
+            if this_line_matches:
+                # Iterate in reverse order of definition
+                # ftr is from active_filters which is sorted by original index
                 for ftr in reversed(this_line_matches):
                     if ftr["exclude"]:
-                        final_verdict = False
-                        break # Exclude wins
-                    else:
-                        final_verdict = True
-                        # If include wins, we stop? Or do we check for higher priority excludes?
-                        # Example: [Include "A", Exclude "B"]
-                        # Line "AB".
-                        # Reversed: Check Exclude B. Matches. Verdict = False. Break. Result: Hidden. Correct.
-                        
-                        # Example: [Exclude "B", Include "A"]
-                        # Line "AB".
-                        # Reversed: Check Include A. Matches. Verdict = True. 
-                        # Continue? If we continue, we check Exclude B. Matches. Verdict = False. Break. 
-                        # So yes, we just continue.
-                        
-                        # Wait, original code:
-                        # for ftr in reversed(active_filters):
-                        #    check match...
-                        #    if match: 
-                        #       if exclude: matched=False; break
-                        #       else: matched=True
-                        pass
-            
-            # Let's proceed with the original logic but update counts on the fly.
-            # It is safer re-run the loop logic exactly or refactor carefully.
-            
-            # Reset for decision logic
-            matched_decision = False
-            for ftr in reversed(prepared_filters):
-                # We already know if it matched from the counting pass? 
-                # Doing regex twice is slow.
-                # Let's rely on 'this_line_matches' list which contains objects.
-                
-                # Check if this ftr is in this_line_matches
-                # Optimization: ftr is the same object reference.
-                if ftr in this_line_matches:
-                    if ftr["exclude"]:
                         matched_decision = False
-                        break
+                        break # Exclude wins priority
                     else:
                         matched_decision = True
+                        break # Include wins priority
             
             if matched_decision:
                 match_count += 1
@@ -482,7 +381,9 @@ class LogModel(QAbstractListModel):
                 
             matched = False
             is_excluded = False
-            for ftr in reversed(self.filters):
+            
+            # Incremental Counting and Visibility
+            for ftr in self.filters:
                 if not ftr.get("active", True):
                     continue
                 is_match = False
@@ -500,14 +401,19 @@ class LogModel(QAbstractListModel):
                         if ftr["text"].lower() in line.lower():
                             is_match = True
                 
-                if ftr["exclude"]:
-                    if is_match:
+                if is_match:
+                    ftr['total_matches'] = ftr.get('total_matches', 0) + 1
+                    # Priority logic: Exclude beats Include if both match a line
+                    if ftr["exclude"]:
                         matched = False
                         is_excluded = True
-                        break 
-                else:
-                    if is_match:
+                    else:
+                        # Only set matched=True if we aren't already excluded by a higher index filter
+                        # Wait, the list is processed in order. To maintain "last wins" (highest index wins):
+                        # We just keep updating 'matched' and 'is_excluded'.
+                        # This works because ftr is the ACTUAL dict and index is preserved.
                         matched = True
+                        is_excluded = False
             
             if not is_excluded:
                 if matched or not self.show_only_filtered:
@@ -966,6 +872,7 @@ class LogAnalysisMainWindow(QMainWindow):
         data_added = self.log_model.append_chunk(lines)
         if data_added:
             self.update_stats()
+            self.update_filter_counts_ui() # Real-time update
         
         if data_added and was_at_bottom:
             self.log_view.scrollToBottom()
@@ -1207,21 +1114,30 @@ class LogAnalysisMainWindow(QMainWindow):
         self.filter_map_back = {}
         
         flat_idx = 0
+        all_filters_to_count = []
+        self.filter_map_back = {}
+        
         for tab_idx, filters in enumerate(self.filters):
             for filter_idx, f in enumerate(filters):
-                if f.get("active", True):
-                    f_data = f.copy()
-                    # We add a unique ID to the filter data sent to worker? 
-                    # No, worker uses `active_filters` list index.
-                    # We just need to know that active_filters[i] corresponds to self.filters[tab][fil].
-                    
-                    self.filter_map_back[flat_idx] = (tab_idx, filter_idx)
-                    all_filters_flat.append(f_data)
-                    flat_idx += 1
+                # We pass EVERYTHING to the worker so we can scan once and update all counts
+                # Worker will distinguish between "active for visibility" and "just for counting"
+                f_data = f.copy()
+                self.filter_map_back[flat_idx] = (tab_idx, filter_idx)
+                all_filters_to_count.append(f_data)
+                flat_idx += 1
         
-        self.log_model.filters = all_filters_flat
+        # LogModel needs the ACTUAL dictionaries to update counts in real-time during ADB stream
+        flattened_originals = []
+        for filters in self.filters:
+            flattened_originals.extend(filters)
+        self.log_model.filters = flattened_originals
         
         if not self.log_model.all_lines:
+            # Still update UI to clear counts
+            for tab in self.filters:
+                for f in tab:
+                    f['total_matches'] = 0
+            self.on_filtering_finished([], 0, [0]*len(all_filters_to_count))
             return
         
         if self.filter_thread and self.filter_thread.isRunning():
@@ -1233,7 +1149,7 @@ class LogAnalysisMainWindow(QMainWindow):
             
         self.filter_thread = FilterWorker(
             self.log_model.all_lines, 
-            all_filters_flat, 
+            all_filters_to_count, 
             self.log_model.show_only_filtered
         )
         self.filter_thread.finished_filtering.connect(self.on_filtering_finished)
@@ -1244,36 +1160,36 @@ class LogAnalysisMainWindow(QMainWindow):
         self.update_stats()
         
         if filter_counts and hasattr(self, 'filter_map_back'):
-            # Reset all counts to 0 first?
-            # Creating a fresh map might be better.
-            
-            # Update the source data
+            # Reset ALL counts for ALL tabs first to ensure consistency
+            for tab in self.filters:
+                for f in tab:
+                    f['total_matches'] = 0
+                    
+            # Update the source data with new counts from worker
             for flat_idx, count in enumerate(filter_counts):
                 if flat_idx in self.filter_map_back:
                     tab_idx, filter_idx = self.filter_map_back[flat_idx]
                     if tab_idx < len(self.filters) and filter_idx < len(self.filters[tab_idx]):
+                        # If monitoring, we should perhaps be careful about overwriting?
+                        # But worker just finished a full scan.
                         self.filters[tab_idx][filter_idx]['total_matches'] = count
             
-            # Now update the UI for the CURRENT tab
-            current_tab_idx = self.filter_tabs.currentIndex()
-            if current_tab_idx >= 0 and current_tab_idx < len(self.filter_tab_lists):
-                 current_list = self.filter_tab_lists[current_tab_idx]
-                 current_filters = self.filters[current_tab_idx]
-                 
-                 for i in range(current_list.count()):
-                     item = current_list.item(i)
-                     widget = current_list.itemWidget(item)
-                     if widget and i < len(current_filters):
-                         # The widget has a reference to filter_data dict.
-                         # Does it update automatically? 
-                         # 'total_matches' key in dict is updated above.
-                         # We need to tell widget to redraw text.
-                         if 'total_matches' in current_filters[i]:
-                             widget.filter_data['total_matches'] = current_filters[i]['total_matches']
-                         else:
-                             widget.filter_data['total_matches'] = 0
-                             
-                         widget.update_display()
+            self.update_filter_counts_ui()
+            
+    def update_filter_counts_ui(self):
+        # Update the UI for the CURRENT tab
+        current_tab_idx = self.filter_tabs.currentIndex()
+        if current_tab_idx >= 0 and current_tab_idx < len(self.filter_tab_lists):
+             current_list = self.filter_tab_lists[current_tab_idx]
+             current_filters = self.filters[current_tab_idx]
+             
+             for i in range(current_list.count()):
+                 item = current_list.item(i)
+                 widget = current_list.itemWidget(item)
+                 if widget and i < len(current_filters):
+                     # Copy current count to widget's data (redundant if same ref, but safe)
+                     widget.filter_data['total_matches'] = current_filters[i].get('total_matches', 0)
+                     widget.update_display()
         
         if self.is_monitoring:
              self.status_bar.showMessage(f"Monitoring...")
