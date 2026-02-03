@@ -3,6 +3,7 @@ import re
 import subprocess
 import os
 import json
+import bisect
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QAction, QFileDialog, QStatusBar,
     QVBoxLayout, QWidget, QDialog, QLineEdit, QCheckBox, QComboBox, 
@@ -1175,6 +1176,14 @@ class LogAnalysisMainWindow(QMainWindow):
             self.filter_thread.stop()
             self.filter_thread.wait()
         
+        # Smart selection tracking: remember where we are in source
+        self.target_source_idx = -1
+        current_idx = self.log_view.currentIndex()
+        if current_idx.isValid():
+            row = current_idx.row()
+            if row < len(self.log_model.visible_indices):
+                self.target_source_idx = self.log_model.visible_indices[row]
+
         if not self.is_monitoring:
             self.status_bar.showMessage("Refiltering...")
             
@@ -1188,6 +1197,34 @@ class LogAnalysisMainWindow(QMainWindow):
 
     def on_filtering_finished(self, visible_indices, match_count, filter_counts=None):
         self.log_model.update_visible_indices(visible_indices)
+        
+        # Restore or Shift Selection
+        if hasattr(self, 'target_source_idx') and self.target_source_idx != -1 and visible_indices:
+            # Find the best row to select in the new visible list
+            # visible_indices is sorted, so we can use bisect
+            pos = bisect.bisect_left(visible_indices, self.target_source_idx)
+            
+            # Determine which available index is closer to our target
+            new_row = -1
+            if pos < len(visible_indices):
+                # pos is the first index >= target. 
+                # Check if it's the exact match or if the previous one is closer
+                if pos > 0:
+                    dist_curr = visible_indices[pos] - self.target_source_idx
+                    dist_prev = self.target_source_idx - visible_indices[pos-1]
+                    new_row = pos if dist_curr <= dist_prev else pos - 1
+                else:
+                    new_row = pos
+            else:
+                # Target is beyond the end, take the last available
+                new_row = len(visible_indices) - 1
+            
+            if new_row != -1:
+                model_idx = self.log_model.index(new_row, 0)
+                self.log_view.setCurrentIndex(model_idx)
+                # If we toggled filters, we want to make sure the user sees where they are
+                self.log_view.scrollTo(model_idx, QAbstractItemView.PositionAtCenter)
+
         self.update_stats()
         
         if filter_counts and hasattr(self, 'filter_map_back'):
