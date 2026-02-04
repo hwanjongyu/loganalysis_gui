@@ -33,7 +33,7 @@ To ensure the UI remains frozen-free (60fps), heavy lifting is delegated to dedi
     *   **Role**: Data Ingestor.
     *   **Responsibility**: Manages the `adb logcat` subprocess. Buffers high-velocity stream data and emits batched chunks to the UI thread to prevent event-loop flooding.
 
-### 4. The Presentation Layer: `QListView`
+### 4. The Presentation Layer: `QTreeView`
 **Role**: Virtualized Renderer.
 **Responsibilities**:
 *   **Virtualization**: Renders *only* the rows currently visible in the viewport.

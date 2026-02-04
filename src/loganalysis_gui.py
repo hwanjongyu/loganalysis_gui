@@ -8,8 +8,9 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QAction, QFileDialog, QStatusBar,
     QVBoxLayout, QWidget, QDialog, QLineEdit, QCheckBox, QComboBox, 
     QPushButton, QLabel, QHBoxLayout, QListWidget, QSplitter, 
-    QListWidgetItem, QTabWidget, QMessageBox, QInputDialog, QListView,
-    QAbstractItemView, QDockWidget, QToolBar, QStyle, QGroupBox, QFormLayout
+    QListWidgetItem, QTabWidget, QMessageBox, QInputDialog, QTreeView,
+    QAbstractItemView, QDockWidget, QToolBar, QStyle, QGroupBox, QFormLayout,
+    QHeaderView
 )
 from PyQt5.QtGui import QColor, QFont, QIcon, QPalette, QPixmap
 from PyQt5.QtCore import Qt, pyqtSignal, QAbstractListModel, QModelIndex, QThread, QSize, QMutex
@@ -644,10 +645,19 @@ class LogAnalysisMainWindow(QMainWindow):
         self.quick_filter_toolbar.addWidget(self.quick_exclude)
         
         # Main Layout
-        self.log_view = QListView()
-        self.log_view.setUniformItemSizes(True) 
+        # Main Layout - Changed to QTreeView for horizontal scroll support
+        self.log_view = QTreeView()
+        self.log_view.setUniformRowHeights(True) 
         self.log_view.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.log_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.log_view.setHeaderHidden(True)
+        self.log_view.setRootIsDecorated(False)
+        self.log_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.log_view.header().setStretchLastSection(False)
+        # Using ResizeToContents with millions of rows causes ANR because it calculates widths on every update.
+        # Switch to Interactive with a large default width for performance.
+        self.log_view.header().setSectionResizeMode(QHeaderView.Interactive)
+        self.log_view.header().setDefaultSectionSize(3000) 
         
         self.log_model = LogModel()
         self.log_view.setModel(self.log_model)
