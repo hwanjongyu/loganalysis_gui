@@ -527,6 +527,12 @@ class LogAnalysisMainWindow(QMainWindow):
         file_menu.addAction(save_filters_action)
         
         file_menu.addSeparator()
+        clear_logs_action = QAction(style.standardIcon(QStyle.SP_DialogResetButton), "Clear Logs", self)
+        clear_logs_action.setShortcut("Ctrl+K")
+        clear_logs_action.triggered.connect(self.clear_logs)
+        file_menu.addAction(clear_logs_action)
+        
+        file_menu.addSeparator()
         exit_action = QAction(style.standardIcon(QStyle.SP_DialogCloseButton), "Exit", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
@@ -643,6 +649,17 @@ class LogAnalysisMainWindow(QMainWindow):
         self.quick_filter_toolbar.addWidget(self.quick_case)
         self.quick_filter_toolbar.addWidget(self.quick_regex)
         self.quick_filter_toolbar.addWidget(self.quick_exclude)
+
+        self.quick_filter_toolbar.addSeparator()
+        # Add Monitor Actions to Toolbar
+        self.quick_filter_toolbar.addAction(self.adb_monitor_action)
+        self.quick_filter_toolbar.addAction(self.pause_action)
+        
+        self.btn_clear = QPushButton()
+        self.btn_clear.setIcon(self.style().standardIcon(QStyle.SP_DialogResetButton))
+        self.btn_clear.setToolTip("Clear Logs (Ctrl+K)")
+        self.btn_clear.clicked.connect(self.clear_logs)
+        self.quick_filter_toolbar.addWidget(self.btn_clear)
         
         # Main Layout
         # Main Layout - Changed to QTreeView for horizontal scroll support
@@ -860,6 +877,17 @@ class LogAnalysisMainWindow(QMainWindow):
             while self.pending_chunks:
                 chunk = self.pending_chunks.pop(0)
                 self.log_model.append_chunk(chunk)
+    
+    def clear_logs(self):
+        self.log_model.clear()
+        self.pending_chunks = []
+        self.update_stats()
+        # Reset matching counts for UI consistency
+        for tab in self.filters:
+            for f in tab:
+                f['total_matches'] = 0
+        self.update_filter_counts_ui()
+        self.status_bar.showMessage("Logs cleared.", 3000)
             
     def toggle_pause(self, checked):
         self.is_paused = checked
