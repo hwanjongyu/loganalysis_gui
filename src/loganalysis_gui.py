@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QHBoxLayout, QListWidget, QSplitter, 
     QListWidgetItem, QTabWidget, QMessageBox, QInputDialog, QTreeView,
     QAbstractItemView, QDockWidget, QToolBar, QStyle, QGroupBox, QFormLayout,
-    QHeaderView
+    QHeaderView, QTabBar
 )
 from PyQt5.QtGui import QColor, QFont, QIcon, QPalette, QPixmap
 from PyQt5.QtCore import Qt, pyqtSignal, QAbstractListModel, QModelIndex, QThread, QSize, QMutex
@@ -689,6 +689,7 @@ class LogAnalysisMainWindow(QMainWindow):
         
         self.filter_tab_lists = []
         self.filters = []
+        self.tab_enabled = []
         self.add_filter_tab()
 
         filter_panel = QWidget()
@@ -841,10 +842,11 @@ class LogAnalysisMainWindow(QMainWindow):
             self.pending_chunks = []
             
             active_filters = []
-            for filters in self.filters:
-                for f in filters:
-                    if f.get("active", True):
-                        active_filters.append(f)
+            for tab_idx, filters in enumerate(self.filters):
+                if self.tab_enabled[tab_idx]:
+                    for f in filters:
+                        if f.get("active", True):
+                            active_filters.append(f)
             self.log_model.filters = active_filters
             
             self.adb_thread = AdbWorker()
@@ -962,9 +964,24 @@ class LogAnalysisMainWindow(QMainWindow):
         filter_list.model().rowsMoved.connect(lambda: self.sync_filter_order())
         self.filter_tab_lists.append(filter_list)
         self.filters.append([])
+        self.tab_enabled.append(True)
+        
         idx = len(self.filter_tab_lists) - 1
         self.filter_tabs.addTab(filter_list, f"Filter Set {idx+1}")
+        
+        # Add checkbox to the tab
+        cb = QCheckBox()
+        cb.setChecked(True)
+        cb.setToolTip("Enable/Disable this filter set")
+        cb.stateChanged.connect(lambda state, i=idx: self._on_tab_toggled(i, state))
+        # Position it on the left of the tab text
+        self.filter_tabs.tabBar().setTabButton(idx, QTabBar.LeftSide, cb)
+        
         self.filter_tabs.setCurrentIndex(idx)
+
+    def _on_tab_toggled(self, index, state):
+        self.tab_enabled[index] = (state == Qt.Checked)
+        self.apply_filters()
 
     def sync_filter_order(self):
         filter_list, filters = self.current_filter_list()
@@ -988,6 +1005,7 @@ class LogAnalysisMainWindow(QMainWindow):
             self.filter_tabs.removeTab(idx)
             del self.filter_tab_lists[idx]
             del self.filters[idx]
+            del self.tab_enabled[idx]
             self.apply_filters()
 
     def current_filter_list(self):
@@ -1108,6 +1126,7 @@ class LogAnalysisMainWindow(QMainWindow):
                 # Save as a dictionary containing the name and filters
                 data = {
                     "name": tab_name,
+                    "enabled": self.tab_enabled[idx],
                     "filters": filters_to_save
                 }
                 with open(file_path, 'w', encoding='utf-8') as f:
@@ -1129,12 +1148,14 @@ class LogAnalysisMainWindow(QMainWindow):
                 
                 loaded_set = []
                 tab_name = None
+                tab_enabled = True
                 
                 # Handle different JSON structures
                 if isinstance(loaded, dict):
                     # New single-tab structure: {"name": "...", "filters": [...]}
                     loaded_set = loaded.get('filters', [])
                     tab_name = loaded.get('name')
+                    tab_enabled = loaded.get('enabled', True)
                 elif isinstance(loaded, list):
                     if len(loaded) > 0 and isinstance(loaded[0], dict) and 'filters' in loaded[0]:
                         # Legacy multi-tab structure (take the first one)
@@ -1153,9 +1174,17 @@ class LogAnalysisMainWindow(QMainWindow):
                 filter_list.clear()
                 filters.clear()
                 
+                idx = self.filter_tabs.currentIndex()
                 if tab_name:
-                    idx = self.filter_tabs.currentIndex()
                     self.filter_tabs.setTabText(idx, tab_name)
+                
+                self.tab_enabled[idx] = tab_enabled
+                # Update checkbox in tab bar
+                cb = self.filter_tabs.tabBar().tabButton(idx, QTabBar.LeftSide)
+                if isinstance(cb, QCheckBox):
+                    cb.blockSignals(True)
+                    cb.setChecked(tab_enabled)
+                    cb.blockSignals(False)
                 
                 for filter_data in loaded_set:
                     item = QListWidgetItem()
@@ -1188,10 +1217,16 @@ class LogAnalysisMainWindow(QMainWindow):
         self.filter_map_back = {}
         
         for tab_idx, filters in enumerate(self.filters):
+            # Only process if tab is enabled
+            is_enabled = self.tab_enabled[tab_idx]
             for filter_idx, f in enumerate(filters):
                 # We pass EVERYTHING to the worker so we can scan once and update all counts
                 # Worker will distinguish between "active for visibility" and "just for counting"
                 f_data = f.copy()
+                # If tab is disabled, force filter to be inactive for visibility
+                if not is_enabled:
+                    f_data["active"] = False
+                
                 self.filter_map_back[flat_idx] = (tab_idx, filter_idx)
                 all_filters_to_count.append(f_data)
                 flat_idx += 1
