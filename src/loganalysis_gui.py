@@ -487,6 +487,9 @@ class LogAnalysisMainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         
+        self.tab_modified = []
+        self.tab_file_paths = []
+        
         # Permanent Status Widgets
         self.lbl_stats = QLabel("Lines: 0 | Visible: 0")
         self.status_bar.addPermanentWidget(self.lbl_stats)
@@ -745,6 +748,7 @@ class LogAnalysisMainWindow(QMainWindow):
         filter_list.setItemWidget(item, widget)
         
         self.apply_filters()
+        self.set_tab_modified(self.filter_tabs.currentIndex(), True)
         self.quick_input.clear()
 
     def update_stats(self):
@@ -933,7 +937,9 @@ class LogAnalysisMainWindow(QMainWindow):
             current_name = self.filter_tabs.tabText(idx)
             new_name, ok = QInputDialog.getText(self, "Rename Tab", "Tab name:", text=current_name)
             if ok and new_name.strip():
+                # Set text directly first, then let set_tab_modified handle the asterisk
                 self.filter_tabs.setTabText(idx, new_name.strip())
+                self.set_tab_modified(idx, True)
 
     def show_about_dialog(self):
         QMessageBox.about(self, "About LogAnalysis GUI",
@@ -978,9 +984,23 @@ class LogAnalysisMainWindow(QMainWindow):
         self.filter_tabs.tabBar().setTabButton(idx, QTabBar.LeftSide, cb)
         
         self.filter_tabs.setCurrentIndex(idx)
+        self.tab_modified.append(False)
+        self.tab_file_paths.append(None)
+
+    def set_tab_modified(self, index, modified: bool):
+        if 0 <= index < len(self.tab_modified):
+            self.tab_modified[index] = modified
+            current_text = self.filter_tabs.tabText(index)
+            if modified:
+                if not current_text.startswith("*"):
+                    self.filter_tabs.setTabText(index, "*" + current_text)
+            else:
+                if current_text.startswith("*"):
+                    self.filter_tabs.setTabText(index, current_text[1:])
 
     def _on_tab_toggled(self, index, state):
         self.tab_enabled[index] = (state == Qt.Checked)
+        self.set_tab_modified(index, True)
         self.apply_filters()
 
     def sync_filter_order(self):
@@ -998,6 +1018,7 @@ class LogAnalysisMainWindow(QMainWindow):
                 item = filter_list.item(i)
                 self.apply_filter_colors_to_list_item(item, filters[i])
         self.apply_filters()
+        self.set_tab_modified(self.filter_tabs.currentIndex(), True)
 
     def delete_filter_tab(self):
         idx = self.filter_tabs.currentIndex()
@@ -1006,6 +1027,8 @@ class LogAnalysisMainWindow(QMainWindow):
             del self.filter_tab_lists[idx]
             del self.filters[idx]
             del self.tab_enabled[idx]
+            del self.tab_modified[idx]
+            del self.tab_file_paths[idx]
             self.apply_filters()
 
     def current_filter_list(self):
@@ -1068,9 +1091,11 @@ class LogAnalysisMainWindow(QMainWindow):
             filter_list.setItemWidget(item, widget)
             
             self.apply_filters()
+            self.set_tab_modified(self.filter_tabs.currentIndex(), True)
 
     def _on_filter_toggled(self, filter_data, checked):
         self.apply_filters()
+        self.set_tab_modified(self.filter_tabs.currentIndex(), True)
 
     def edit_filter_dialog(self, item):
         filter_list, filters = self.current_filter_list()
@@ -1093,6 +1118,7 @@ class LogAnalysisMainWindow(QMainWindow):
                 widget.update_display()
             
             self.apply_filters()
+            self.set_tab_modified(self.filter_tabs.currentIndex(), True)
 
     def eventFilter(self, source, event):
         current_idx = self.filter_tabs.currentIndex()
@@ -1104,6 +1130,7 @@ class LogAnalysisMainWindow(QMainWindow):
                     self.filter_tab_lists[current_idx].takeItem(idx)
                     del self.filters[current_idx][idx]
                 self.apply_filters()
+                self.set_tab_modified(current_idx, True)
                 return True
         return super().eventFilter(source, event)
 
@@ -1132,6 +1159,8 @@ class LogAnalysisMainWindow(QMainWindow):
                 with open(file_path, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
                 
+                self.tab_file_paths[idx] = file_path
+                self.set_tab_modified(idx, False)
                 self.status_bar.showMessage(f"Filters from '{tab_name}' saved to {file_path}")
             except Exception as e:
                 self.status_bar.showMessage(f"Error saving filters: {str(e)}")
@@ -1197,6 +1226,8 @@ class LogAnalysisMainWindow(QMainWindow):
                     filter_list.setItemWidget(item, widget)
                 
                 self.apply_filters()
+                self.tab_file_paths[idx] = file_path
+                self.set_tab_modified(idx, False)
                 self.status_bar.showMessage(f"Filters loaded into current tab from {file_path}")
             except Exception as e:
                 self.status_bar.showMessage(f"Error loading filters: {str(e)}")
@@ -1336,6 +1367,42 @@ class LogAnalysisMainWindow(QMainWindow):
              self.status_bar.showMessage(f"Monitoring...")
         else:
              self.status_bar.showMessage(f"Refiltered complete.")
+
+    def closeEvent(self, event):
+        modified_tabs = []
+        for i, modified in enumerate(self.tab_modified):
+            if modified:
+                name = self.filter_tabs.tabText(i)
+                if name.startswith("*"): name = name[1:]
+                modified_tabs.append(name)
+        
+        if modified_tabs:
+            tab_list_str = "\n".join([f"- {name}" for name in modified_tabs])
+            msg = f"The following filter tabs have unsaved changes:\n\n{tab_list_str}\n\nDo you want to save before exiting?"
+            
+            res = QMessageBox.warning(
+                self, "Unsaved Changes", msg,
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                QMessageBox.Save
+            )
+            
+            if res == QMessageBox.Save:
+                # Iterate and save those that are modified
+                for i, modified in enumerate(self.tab_modified):
+                    if modified:
+                        self.filter_tabs.setCurrentIndex(i)
+                        self.save_filters()
+                        # If still modified (user cancelled save dialog), abort closing
+                        if self.tab_modified[i]:
+                            event.ignore()
+                            return
+                event.accept()
+            elif res == QMessageBox.Discard:
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            event.accept()
 
 # --- Child Classes ---
 class FilterItemWidget(QWidget):
