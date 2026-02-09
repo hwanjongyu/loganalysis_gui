@@ -529,6 +529,11 @@ class LogAnalysisMainWindow(QMainWindow):
         save_filters_action.triggered.connect(self.save_filters)
         file_menu.addAction(save_filters_action)
         
+        save_filters_as_action = QAction(style.standardIcon(QStyle.SP_DialogSaveButton), "Save Filters As...", self)
+        save_filters_as_action.setShortcut("Ctrl+Shift+S")
+        save_filters_as_action.triggered.connect(self.save_filters_as)
+        file_menu.addAction(save_filters_as_action)
+        
         file_menu.addSeparator()
         clear_logs_action = QAction(style.standardIcon(QStyle.SP_DialogResetButton), "Clear Logs", self)
         clear_logs_action.setShortcut("Ctrl+K")
@@ -952,6 +957,8 @@ class LogAnalysisMainWindow(QMainWindow):
         QMessageBox.information(self, "Shortcuts",
                                 "<b>Keyboard Shortcuts</b><br><br>"
                                 "<b>Ctrl+O</b>: Open File<br>"
+                                "<b>Ctrl+S</b>: Save Filters<br>"
+                                "<b>Ctrl+Shift+S</b>: Save Filters As<br>"
                                 "<b>Ctrl+C</b>: Copy Selection<br>"
                                 "<b>Ctrl+F</b>: Find<br>"
                                 "<b>Ctrl+Shift+F</b>: Add Filter<br>"
@@ -1135,35 +1142,51 @@ class LogAnalysisMainWindow(QMainWindow):
         return super().eventFilter(source, event)
 
     def save_filters(self):
+        idx = self.filter_tabs.currentIndex()
+        if idx < 0: return
+        
+        if self.tab_file_paths[idx]:
+            self._do_save(idx, self.tab_file_paths[idx])
+        else:
+            self.save_filters_as()
+
+    def save_filters_as(self):
         # Only save selected tab
         idx = self.filter_tabs.currentIndex()
         if idx < 0: return
         
         tab_name = self.filter_tabs.tabText(idx)
+        if tab_name.startswith("*"): tab_name = tab_name[1:]
         default_name = f"{tab_name}.json"
         
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Current Tab Filters", default_name, 
+            self, "Save Current Tab Filters As", default_name, 
             "JSON Files (*.json);;All Files (*)"
         )
         
         if file_path:
-            try:
-                filters_to_save = self.filters[idx]
-                # Save as a dictionary containing the name and filters
-                data = {
-                    "name": tab_name,
-                    "enabled": self.tab_enabled[idx],
-                    "filters": filters_to_save
-                }
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                
-                self.tab_file_paths[idx] = file_path
-                self.set_tab_modified(idx, False)
-                self.status_bar.showMessage(f"Filters from '{tab_name}' saved to {file_path}")
-            except Exception as e:
-                self.status_bar.showMessage(f"Error saving filters: {str(e)}")
+            self._do_save(idx, file_path)
+
+    def _do_save(self, idx, file_path):
+        try:
+            tab_name = self.filter_tabs.tabText(idx)
+            if tab_name.startswith("*"): tab_name = tab_name[1:]
+            
+            filters_to_save = self.filters[idx]
+            # Save as a dictionary containing the name and filters
+            data = {
+                "name": tab_name,
+                "enabled": self.tab_enabled[idx],
+                "filters": filters_to_save
+            }
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            
+            self.tab_file_paths[idx] = file_path
+            self.set_tab_modified(idx, False)
+            self.status_bar.showMessage(f"Filters from '{tab_name}' saved to {file_path}", 3000)
+        except Exception as e:
+            self.status_bar.showMessage(f"Error saving filters: {str(e)}", 5000)
 
     def load_filters(self):
         file_path, _ = QFileDialog.getOpenFileName(
