@@ -1541,6 +1541,11 @@ class FilterDialog(QDialog):
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
         
+        # Contrast Warning
+        self.contrast_lbl = QLabel("")
+        self.contrast_lbl.setWordWrap(True)
+        self.contrast_lbl.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 9pt;")
+        
         # Connect signals for preview
         self.text_input.textChanged.connect(self.update_preview)
         self.case_sensitive.toggled.connect(self.update_preview)
@@ -1598,6 +1603,7 @@ class FilterDialog(QDialog):
         
         # 3. Footer
         btn_layout = QHBoxLayout()
+        btn_layout.addWidget(self.contrast_lbl, 1) # Label takes available stretch
         btn_layout.addStretch()
         btn_layout.addWidget(self.ok_btn)
         btn_layout.addWidget(self.cancel_btn)
@@ -1631,6 +1637,46 @@ class FilterDialog(QDialog):
             
         self.preview_lbl.setStyleSheet(style)
         self.preview_lbl.setText(text)
+        self.check_contrast()
+
+    def check_contrast(self):
+        bg_name = self.bg_color.currentText()
+        fg_name = self.text_color.currentText()
+        
+        # Assumptions for Dark Mode (Default)
+        bg_hex = COLOR_MAP.get(bg_name, "#1e1e1e") if bg_name != "None" else "#1e1e1e"
+        fg_hex = TEXT_COLOR_MAP.get(fg_name, "#e0e0e0") if fg_name != "None" else "#e0e0e0"
+        
+        try:
+            ratio = self.calculate_contrast(bg_hex, fg_hex)
+            
+            if ratio < 3.0:
+                self.contrast_lbl.setText("⚠️ Critical: Very poor contrast!")
+                self.contrast_lbl.setToolTip(f"Contrast Ratio: {ratio:.2f}:1 (Target: 4.5:1)")
+            elif ratio < 4.5:
+                self.contrast_lbl.setText("⚠️ Warning: Low contrast.")
+                self.contrast_lbl.setToolTip(f"Contrast Ratio: {ratio:.2f}:1 (Target: 4.5:1)")
+            else:
+                self.contrast_lbl.setText("")
+                self.contrast_lbl.setToolTip("")
+        except:
+            self.contrast_lbl.setText("")
+
+    def calculate_contrast(self, hex1, hex2):
+        def get_l(c):
+            # Hex to linear sRGB
+            rgb = [int(c.lstrip('#')[i:i+2], 16) / 255.0 for i in (0, 2, 4)]
+            # Gamma correction
+            rgb = [v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4 for v in rgb]
+            # Relative luminance
+            return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+            
+        l1 = get_l(hex1)
+        l2 = get_l(hex2)
+        
+        brightest = max(l1, l2)
+        darkest = min(l1, l2)
+        return (brightest + 0.05) / (darkest + 0.05)
 
     def get_filter_data(self):
         return {
