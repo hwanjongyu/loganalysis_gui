@@ -286,17 +286,30 @@ class LogModel(QAbstractListModel):
         if role == Qt.BackgroundRole or role == Qt.ForegroundRole:
             return self._get_color(line_text, role)
 
+        if role == Qt.ToolTipRole:
+            matches = self._get_matching_filters(line_text)
+            if matches:
+                tip = "<b>Matching Filters:</b><br/>"
+                for m in matches:
+                    prefix = "[REGEX]" if m["regex"] else "[TEXT]"
+                    options = []
+                    if m["bg_color"] != "None": options.append(f"BG: {m['bg_color']}")
+                    if m.get("text_color", "None") != "None": options.append(f"FG: {m['text_color']}")
+                    opt_str = f" ({', '.join(options)})" if options else ""
+                    
+                    # Highlight pattern if excluded
+                    pattern = f"<strike>{m['text']}</strike>" if m["exclude"] else f"\"{m['text']}\""
+                    tip += f"• {prefix} {pattern}{opt_str}<br/>"
+                return tip
+
         return None
 
-    def _get_color(self, line, role):
+    def _get_matching_filters(self, line):
         if not self.filters:
-            return None
+            return []
             
-        bg_result = None
-        fg_result = None
-        matched_any = False
-
-        for ftr in reversed(self.filters):
+        matches = []
+        for ftr in self.filters:
             if not ftr.get("active", True):
                 continue
 
@@ -315,33 +328,41 @@ class LogModel(QAbstractListModel):
                     if ftr["text"].lower() in line.lower():
                         is_match = True
             
-            if ftr["exclude"]:
-                if is_match:
-                    return None 
-            else:
-                if is_match:
-                    matched_any = True
-                    if ftr["bg_color"] != "None":
-                        bg_result = ftr["bg_color"]
-                    if ftr.get("text_color", "None") != "None":
-                        fg_result = ftr["text_color"]
-        
-        # Default text color behavior depends on theme, but model returns specific colors
-        # If no match and not filtered out, we want default colors.
-        # Returning None lets the view decide based on palette/stylesheet.
-        
-        if not matched_any:
+            if is_match:
+                matches.append(ftr)
+        return matches
+
+    def _get_color(self, line, role):
+        matches = self._get_matching_filters(line)
+        if not matches:
             if role == Qt.ForegroundRole:
-                # If dark mode, we might want to return None to let QSS handle it,
-                # or return specific gray.
-                # Returning a specific gray works for both usually.
                 return QColor("#808080")
             return None
+            
+        bg_result = None
+        fg_result = None
+        
+        # Priority: Last active non-exclude filter wins for colors.
+        # If any match is an exclude, it might have been hidden by the worker, 
+        # but here we just return default if the highest priority match is an exclude.
+        for ftr in reversed(matches):
+            if ftr["exclude"]:
+                return None # Exclude wins priority
+            
+            if bg_result is None and ftr["bg_color"] != "None":
+                bg_result = ftr["bg_color"]
+            if fg_result is None and ftr.get("text_color", "None") != "None":
+                fg_result = ftr["text_color"]
+            
+            if bg_result and fg_result:
+                break
 
         if role == Qt.BackgroundRole and bg_result:
             return QColor(COLOR_MAP.get(bg_result, bg_result))
-        if role == Qt.ForegroundRole and fg_result:
-            return QColor(TEXT_COLOR_MAP.get(fg_result, fg_result))
+        if role == Qt.ForegroundRole:
+            if fg_result:
+                return QColor(TEXT_COLOR_MAP.get(fg_result, fg_result))
+            return None
             
         return None
 
