@@ -12,6 +12,22 @@ class LogModel(QAbstractListModel):
         self.show_line_numbers = True
         self.show_only_filtered = True
         self.font = QFont("Monospace", 10) # Default size 10
+        self.max_line_length = 0
+        self.longest_line_text = ""
+
+    def _display_text(self, line_text):
+        return line_text.rstrip('\r\n')
+
+    def _measured_text(self, line_text):
+        return self._display_text(line_text).rstrip()
+
+    def _update_longest_line(self, lines):
+        for line in lines:
+            measured_text = self._measured_text(line)
+            measured_length = len(measured_text)
+            if measured_length > self.max_line_length:
+                self.max_line_length = measured_length
+                self.longest_line_text = measured_text
         
     def rowCount(self, parent=QModelIndex()):
         return len(self.visible_indices)
@@ -28,7 +44,7 @@ class LogModel(QAbstractListModel):
         line_text = self.all_lines[real_idx]
 
         if role == Qt.DisplayRole:
-            clean_text = line_text.rstrip('\r\n')
+            clean_text = self._display_text(line_text)
             if self.show_line_numbers:
                 return f"{real_idx + 1:6d} | {clean_text}"
             return clean_text
@@ -121,6 +137,9 @@ class LogModel(QAbstractListModel):
         self.beginResetModel()
         self.all_lines = lines
         self.visible_indices = list(range(len(lines)))
+        self.max_line_length = 0
+        self.longest_line_text = ""
+        self._update_longest_line(lines)
         self.endResetModel()
 
     def update_visible_indices(self, indices):
@@ -132,6 +151,8 @@ class LogModel(QAbstractListModel):
         self.beginResetModel()
         self.all_lines = []
         self.visible_indices = []
+        self.max_line_length = 0
+        self.longest_line_text = ""
         self.endResetModel()
         
     def zoom(self, delta):
@@ -144,6 +165,7 @@ class LogModel(QAbstractListModel):
     def append_chunk(self, lines):
         start_real_idx = len(self.all_lines)
         self.all_lines.extend(lines)
+        self._update_longest_line(lines)
         
         # Calculate visibility
         new_indices = []

@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QToolBar, QStyle, QGroupBox, QFormLayout,
     QHeaderView, QTabBar, QApplication
 )
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QFontMetrics
 from PyQt5.QtCore import Qt
 
 from .constants import COLOR_MAP, TEXT_COLOR_MAP, DARK_STYLESHEET, MAX_MONITOR_LINES
@@ -122,12 +122,12 @@ class LogAnalysisMainWindow(QMainWindow):
         view_menu.addSeparator()
         zoom_in_action = QAction("Zoom In", self)
         zoom_in_action.setShortcut("Ctrl++")
-        zoom_in_action.triggered.connect(lambda: self.log_model.zoom(1))
+        zoom_in_action.triggered.connect(lambda: self.zoom_log(1))
         view_menu.addAction(zoom_in_action)
         
         zoom_out_action = QAction("Zoom Out", self)
         zoom_out_action.setShortcut("Ctrl+-")
-        zoom_out_action.triggered.connect(lambda: self.log_model.zoom(-1))
+        zoom_out_action.triggered.connect(lambda: self.zoom_log(-1))
         view_menu.addAction(zoom_out_action)
         
         # Theme Submenu
@@ -219,12 +219,15 @@ class LogAnalysisMainWindow(QMainWindow):
         self.log_view.setHeaderHidden(True)
         self.log_view.setRootIsDecorated(False)
         self.log_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.log_view.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.log_view.setTextElideMode(Qt.ElideNone)
         self.log_view.header().setStretchLastSection(False)
         self.log_view.header().setSectionResizeMode(QHeaderView.Interactive)
-        self.log_view.header().setDefaultSectionSize(3000) 
+        self.log_view.header().setDefaultSectionSize(400) 
         
         self.log_model = LogModel()
         self.log_view.setModel(self.log_model)
+        self._update_log_column_width()
 
         # Add selection context menu
         self.log_view.setContextMenuPolicy(Qt.ActionsContextMenu)
@@ -361,6 +364,7 @@ class LogAnalysisMainWindow(QMainWindow):
             was_at_bottom = True
 
         data_added = self.log_model.append_chunk(lines)
+        self._update_log_column_width()
         if data_added:
             self.update_stats()
             self.update_filter_counts_ui()
@@ -378,6 +382,22 @@ class LogAnalysisMainWindow(QMainWindow):
         for chunk in chunks:
             self._apply_chunk_to_model(chunk)
 
+    def _update_log_column_width(self):
+        if not hasattr(self, "log_view") or not hasattr(self, "log_model"):
+            return
+
+        metrics = QFontMetrics(self.log_model.font)
+        prefix = ""
+        if self.log_model.show_line_numbers:
+            max_line_number = max(len(self.log_model.all_lines), 1)
+            prefix = f"{max_line_number:6d} | "
+
+        sample_text = f"{prefix}{self.log_model.longest_line_text}"
+        content_width = metrics.horizontalAdvance(sample_text) + 24
+        viewport_width = self.log_view.viewport().width()
+        width = max(400, viewport_width, content_width)
+        self.log_view.header().resizeSection(0, width)
+
     def _trim_live_log_buffer_if_needed(self, preserve_bottom=False):
         if not self.is_monitoring:
             return False
@@ -388,6 +408,7 @@ class LogAnalysisMainWindow(QMainWindow):
 
         self._invalidate_filter_results()
         self.log_model.set_lines(self.log_model.all_lines[excess_lines:])
+        self._update_log_column_width()
         if preserve_bottom:
             self.scroll_to_bottom_after_refilter = True
 
@@ -570,6 +591,7 @@ class LogAnalysisMainWindow(QMainWindow):
         self._stop_filter_worker()
         self._invalidate_filter_results()
         self.log_model.clear()
+        self._update_log_column_width()
         self.pending_chunks = []
         self.update_stats()
         for tab in self.filters:
@@ -704,6 +726,11 @@ class LogAnalysisMainWindow(QMainWindow):
     def toggle_line_numbers(self, checked):
         self.log_model.show_line_numbers = checked
         self.log_model.layoutChanged.emit()
+        self._update_log_column_width()
+
+    def zoom_log(self, delta):
+        self.log_model.zoom(delta)
+        self._update_log_column_width()
 
     def toggle_show_only_filtered(self, checked):
         self.log_model.show_only_filtered = checked
@@ -735,6 +762,7 @@ class LogAnalysisMainWindow(QMainWindow):
                 with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
                     lines = f.readlines()
                 self.log_model.set_lines(lines)
+                self._update_log_column_width()
                 self.status_bar.showMessage(f"Loaded: {file_path}")
                 self.update_stats()
                 self.apply_filters()

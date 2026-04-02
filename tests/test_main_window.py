@@ -9,6 +9,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFontMetrics
 from PyQt5.QtWidgets import QApplication
 
 from loganalysis_gui.dialogs import FilterDialog
@@ -118,6 +120,27 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
 
         apply_filters.assert_called_once()
         self.assertEqual(self.window.log_model.all_lines, ["2\n", "3\n", "4\n"])
+
+    def test_long_lines_disable_elision_and_expand_column_width(self):
+        initial_width = self.window.log_view.header().sectionSize(0)
+
+        self.window.on_adb_chunk(["x" * 500 + "\n"])
+
+        self.assertEqual(self.window.log_view.textElideMode(), Qt.ElideNone)
+        self.assertGreater(self.window.log_view.header().sectionSize(0), initial_width)
+
+    def test_column_width_ignores_trailing_padding(self):
+        content = "value" * 100
+        self.window.on_adb_chunk([content + (" " * 200) + "\n"])
+
+        metrics = QFontMetrics(self.window.log_model.font)
+        expected_width = max(
+            400,
+            self.window.log_view.viewport().width(),
+            metrics.horizontalAdvance(f"{1:6d} | {content}") + 24,
+        )
+
+        self.assertEqual(self.window.log_view.header().sectionSize(0), expected_width)
 
     def test_append_chunk_uses_last_matching_filter_precedence(self):
         include_filter = make_filter("alpha")
