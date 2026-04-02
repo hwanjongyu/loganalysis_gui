@@ -1,7 +1,7 @@
-import re
 from PyQt5.QtCore import Qt, QAbstractListModel, QModelIndex
 from PyQt5.QtGui import QColor, QFont
 from .constants import COLOR_MAP, TEXT_COLOR_MAP
+from .filter_engine import evaluate_line, find_matching_filters, prepare_filters
 
 
 def display_log_line_text(line_text):
@@ -102,30 +102,8 @@ class LogModel(QAbstractListModel):
         return None
 
     def _get_matching_filters(self, line):
-        if not self.filters:
-            return []
-            
-        matches = []
-        for ftr in self.filters:
-            if not ftr.get("active", True):
-                continue
-
-            is_match = False
-            if ftr["regex"]:
-                flags = 0 if ftr["case_sensitive"] else re.IGNORECASE
-                if re.search(ftr["text"], line, flags):
-                    is_match = True
-            else:
-                if ftr["case_sensitive"]:
-                    if ftr["text"] in line:
-                        is_match = True
-                else:
-                    if ftr["text"].lower() in line.lower():
-                        is_match = True
-            
-            if is_match:
-                matches.append(ftr)
-        return matches
+        prepared_filters = prepare_filters(self.filters)
+        return [matched.filter_data for matched in find_matching_filters(line, prepared_filters)]
 
     def _get_color(self, line, role):
         matches = self._get_matching_filters(line)
@@ -212,57 +190,26 @@ class LogModel(QAbstractListModel):
         new_indices = []
         widest_new_visible_text = ""
         widest_new_visible_length = 0
-        has_active_filters = any(f.get("active", True) for f in self.filters)
+        prepared_filters = prepare_filters(self.filters)
         
         for i, line in enumerate(lines):
             real_idx = start_real_idx + i
-            if not has_active_filters:
+            matching_filters, is_visible = evaluate_line(
+                line,
+                prepared_filters,
+                self.show_only_filtered,
+            )
+            for matched_filter in matching_filters:
+                filter_data = matched_filter.filter_data
+                filter_data['total_matches'] = filter_data.get('total_matches', 0) + 1
+
+            if is_visible:
                 new_indices.append(real_idx)
                 measured_text = self._measured_text(line)
                 measured_length = len(measured_text)
                 if measured_length > widest_new_visible_length:
                     widest_new_visible_length = measured_length
                     widest_new_visible_text = measured_text
-                continue
-                
-            matched = False
-            is_excluded = False
-            
-            # Incremental Counting and Visibility
-            for ftr in self.filters:
-                if not ftr.get("active", True):
-                    continue
-                is_match = False
-                if ftr["regex"]:
-                    flags = 0 if ftr["case_sensitive"] else re.IGNORECASE
-                    if re.search(ftr["text"], line, flags):
-                        is_match = True
-                else:
-                    if ftr["case_sensitive"]:
-                        if ftr["text"] in line:
-                            is_match = True
-                    else:
-                        if ftr["text"].lower() in line.lower():
-                            is_match = True
-                
-                if is_match:
-                    ftr['total_matches'] = ftr.get('total_matches', 0) + 1
-                    # Priority logic: Exclude beats Include if both match a line
-                    if ftr["exclude"]:
-                        matched = False
-                        is_excluded = True
-                    else:
-                        matched = True
-                        is_excluded = False
-            
-            if not is_excluded:
-                if matched or not self.show_only_filtered:
-                    new_indices.append(real_idx)
-                    measured_text = self._measured_text(line)
-                    measured_length = len(measured_text)
-                    if measured_length > widest_new_visible_length:
-                        widest_new_visible_length = measured_length
-                        widest_new_visible_text = measured_text
 
         if new_indices:
             first_row_idx = len(self.visible_indices)

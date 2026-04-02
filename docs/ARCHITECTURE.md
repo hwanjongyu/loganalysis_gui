@@ -28,6 +28,7 @@ To ensure the UI remains frozen-free (60fps), heavy lifting is delegated to dedi
 *   **`FilterWorker` (QThread)**
     *   **Role**: Search Engine.
     *   **Responsibility**: Iterates through the full dataset (millions of lines) to verify Regex/String matches against active filters. Returns specific indices to show.
+    *   **Shared Rules**: Reuses the same `filter_engine` matching and include/exclude precedence rules as the live append and model styling paths so filter behavior stays consistent across threads.
     
 *   **`AdbWorker` (QThread)**
     *   **Role**: Data Ingestor.
@@ -48,6 +49,7 @@ The current implementation uses a strict ownership model to keep UI state cohere
 
 *   **UI thread owns mutable application state**: `LogModel`, filter tabs, enabled/disabled tab state, and status-bar messaging are all mutated from `LogAnalysisMainWindow`.
 *   **`FilterWorker` operates on a request token**: each refilter operation gets a monotonically increasing request id. Completed results are ignored unless they match the latest request, which prevents stale filter results from overwriting newer UI state after clear/open/close operations.
+*   **Filter semantics are centralized**: filter matching, active-filter handling, and include/exclude precedence now live in `filter_engine.py` and are shared by `FilterWorker`, tooltips/colors in `LogModel`, and incremental live append filtering.
 *   **Live ADB chunks are buffered during refiltering**: while a `FilterWorker` recalculates visibility during monitoring, incoming `adb logcat` chunks are queued in `pending_chunks` and flushed only after the latest filter pass completes. This avoids dropping newly streamed lines when the worker publishes a snapshot.
 *   **`AdbWorker` owns subprocess I/O only**: the worker is responsible for `adb logcat` process management and batched chunk emission, but start/stop/wait decisions remain in the main window.
 *   **State resets invalidate in-flight work**: opening a new file, clearing logs, toggling monitoring, and closing the window invalidate previous filter requests before the model is reset.
