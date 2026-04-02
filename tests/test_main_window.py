@@ -51,6 +51,24 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.window.deleteLater()
         self.app.processEvents()
 
+    def wait_for_filtering(self):
+        thread = self.window.filter_thread
+        if thread is not None:
+            thread.wait()
+        self.app.processEvents()
+
+    def expected_full_line_width(self, content):
+        metrics = QFontMetrics(self.window.log_model.font)
+        prefix = ""
+        if self.window.log_model.show_line_numbers:
+            max_line_number = max(len(self.window.log_model.all_lines), 1)
+            prefix = f"{max_line_number:6d} | "
+
+        return max(
+            self.window.log_view.viewport().width(),
+            metrics.horizontalAdvance(f"{prefix}{content}") + 24,
+        )
+
     def test_full_line_display_starts_disabled(self):
         self.assertFalse(self.window.full_line_display_enabled)
         self.assertFalse(self.window.full_line_display_action.isChecked())
@@ -99,6 +117,19 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.window.on_filtering_finished(1, [], 0, [0])
 
         self.assertEqual(self.window.log_model.visible_indices, [0])
+
+    def test_stale_filter_width_candidate_is_ignored(self):
+        self.window.toggle_full_line_display(True)
+        self.window.filter_request_id = 2
+        self.window.log_model.set_lines(["short\n", "other\n"])
+        self.window.log_model.update_visible_indices([0], "short")
+        self.window._update_log_column_width()
+
+        expected_width = self.expected_full_line_width("short")
+        self.window.on_filtering_finished(1, [1], 0, [0], "x" * 500)
+
+        self.assertEqual(self.window.log_model.visible_indices, [0])
+        self.assertEqual(self.window.log_view.header().sectionSize(0), expected_width)
 
     def test_live_chunks_buffer_during_refilter_and_flush_afterward(self):
         self.window.is_monitoring = True
@@ -165,13 +196,49 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.window.toggle_full_line_display(True)
         self.window.on_adb_chunk([content + (" " * 200) + "\n"])
 
-        metrics = QFontMetrics(self.window.log_model.font)
-        expected_width = max(
-            self.window.log_view.viewport().width(),
-            metrics.horizontalAdvance(f"{1:6d} | {content}") + 24,
-        )
+        expected_width = self.expected_full_line_width(content)
 
         self.assertEqual(self.window.log_view.header().sectionSize(0), expected_width)
+
+    def test_full_line_display_uses_widest_visible_filtered_line(self):
+        hidden_line = "x" * 400
+        visible_line = "keep"
+
+        self.window.toggle_full_line_display(True)
+        self.window.log_model.set_lines([f"{visible_line}\n", f"{hidden_line}\n"])
+        self.window.filters[0].append(make_filter(visible_line))
+
+        self.window.apply_filters()
+        self.wait_for_filtering()
+
+        self.assertEqual(self.window.log_model.visible_indices, [0])
+        self.assertEqual(
+            self.window.log_view.header().sectionSize(0),
+            self.expected_full_line_width(visible_line),
+        )
+
+    def test_live_append_ignores_hidden_long_lines_for_full_line_width(self):
+        visible_line = "keep visible"
+        hidden_line = "x" * 500
+        wider_visible_line = f"keep {'y' * 120}"
+
+        self.window.toggle_full_line_display(True)
+        self.window.filters[0].append(make_filter("keep"))
+        self.window.log_model.set_lines([f"{visible_line}\n"])
+        self.window.apply_filters()
+        self.wait_for_filtering()
+
+        initial_width = self.expected_full_line_width(visible_line)
+        self.assertEqual(self.window.log_view.header().sectionSize(0), initial_width)
+
+        self.window.on_adb_chunk([f"{hidden_line}\n"])
+        self.assertEqual(self.window.log_view.header().sectionSize(0), initial_width)
+
+        self.window.on_adb_chunk([f"{wider_visible_line}\n"])
+        self.assertEqual(
+            self.window.log_view.header().sectionSize(0),
+            self.expected_full_line_width(wider_visible_line),
+        )
 
     def test_append_chunk_uses_last_matching_filter_precedence(self):
         include_filter = make_filter("alpha")

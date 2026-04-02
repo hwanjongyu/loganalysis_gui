@@ -1,6 +1,7 @@
 import re
 import subprocess
 from PyQt5.QtCore import QThread, pyqtSignal
+from .models import measured_log_line_text
 
 class AdbWorker(QThread):
     chunk_ready = pyqtSignal(list)
@@ -76,7 +77,7 @@ class AdbWorker(QThread):
 
 
 class FilterWorker(QThread):
-    finished_filtering = pyqtSignal(int, list, int, list)
+    finished_filtering = pyqtSignal(int, list, int, list, str)
     
     def __init__(self, lines, filters, show_only_filtered, request_id):
         super().__init__()
@@ -89,6 +90,8 @@ class FilterWorker(QThread):
     def run(self):
         visible_indices = []
         match_count = 0
+        widest_visible_text = ""
+        widest_visible_length = 0
         
         # Initialize counts for ALL filters passed in
         filter_counts = [0] * len(self.filters)
@@ -111,10 +114,14 @@ class FilterWorker(QThread):
 
             line = self.lines[i]
             
-            # If no active filters, line is visible if NOT show_only_filtered
-            # Consistent with append_chunk: show everything if no filters
+            # Consistent with append_chunk: show everything if no filters.
             if not active_filters:
                 visible_indices.append(i)
+                measured_text = measured_log_line_text(line)
+                measured_length = len(measured_text)
+                if measured_length > widest_visible_length:
+                    widest_visible_length = measured_length
+                    widest_visible_text = measured_text
                 continue
 
             this_line_matches = [] # list of original_indices that matched
@@ -157,10 +164,26 @@ class FilterWorker(QThread):
             if matched_decision:
                 match_count += 1
                 visible_indices.append(i)
+                measured_text = measured_log_line_text(line)
+                measured_length = len(measured_text)
+                if measured_length > widest_visible_length:
+                    widest_visible_length = measured_length
+                    widest_visible_text = measured_text
             elif not self.show_only_filtered:
                 visible_indices.append(i)
+                measured_text = measured_log_line_text(line)
+                measured_length = len(measured_text)
+                if measured_length > widest_visible_length:
+                    widest_visible_length = measured_length
+                    widest_visible_text = measured_text
         
-        self.finished_filtering.emit(self.request_id, visible_indices, match_count, filter_counts)
+        self.finished_filtering.emit(
+            self.request_id,
+            visible_indices,
+            match_count,
+            filter_counts,
+            widest_visible_text,
+        )
 
     def stop(self):
         self.is_running = False

@@ -419,9 +419,10 @@ class LogAnalysisMainWindow(QMainWindow):
                 max_line_number = max(len(self.log_model.all_lines), 1)
                 prefix = f"{max_line_number:6d} | "
 
-            sample_text = f"{prefix}{self.log_model.longest_line_text}"
-            content_width = metrics.horizontalAdvance(sample_text) + 24
-            width = max(width, content_width)
+            if self.log_model.visible_longest_line_text:
+                sample_text = f"{prefix}{self.log_model.visible_longest_line_text}"
+                content_width = metrics.horizontalAdvance(sample_text) + 24
+                width = max(width, content_width)
 
         self.log_view.header().resizeSection(0, width)
 
@@ -1010,7 +1011,7 @@ class LogAnalysisMainWindow(QMainWindow):
             for tab in self.filters:
                 for f in tab:
                     f['total_matches'] = 0
-            self.on_filtering_finished(request_id, [], 0, [0] * len(all_filters_to_count))
+            self.on_filtering_finished(request_id, [], 0, [0] * len(all_filters_to_count), "")
             return
 
         self.target_source_idx = -1
@@ -1033,7 +1034,14 @@ class LogAnalysisMainWindow(QMainWindow):
         self.filter_thread.finished_filtering.connect(self.on_filtering_finished)
         self.filter_thread.start()
 
-    def on_filtering_finished(self, request_id, visible_indices, match_count, filter_counts=None):
+    def on_filtering_finished(
+        self,
+        request_id,
+        visible_indices,
+        match_count,
+        filter_counts=None,
+        widest_visible_text="",
+    ):
         if request_id != self.filter_request_id:
             return
 
@@ -1041,7 +1049,8 @@ class LogAnalysisMainWindow(QMainWindow):
             self.filter_thread = None
 
         self.is_refiltering = False
-        self.log_model.update_visible_indices(visible_indices)
+        self.log_model.update_visible_indices(visible_indices, widest_visible_text)
+        self._update_log_column_width()
         
         if hasattr(self, 'target_source_idx') and self.target_source_idx != -1 and visible_indices:
             pos = bisect.bisect_left(visible_indices, self.target_source_idx)

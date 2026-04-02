@@ -3,6 +3,14 @@ from PyQt5.QtCore import Qt, QAbstractListModel, QModelIndex
 from PyQt5.QtGui import QColor, QFont
 from .constants import COLOR_MAP, TEXT_COLOR_MAP
 
+
+def display_log_line_text(line_text):
+    return line_text.rstrip('\r\n')
+
+
+def measured_log_line_text(line_text):
+    return display_log_line_text(line_text).rstrip()
+
 class LogModel(QAbstractListModel):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -14,12 +22,19 @@ class LogModel(QAbstractListModel):
         self.font = QFont("Monospace", 10) # Default size 10
         self.max_line_length = 0
         self.longest_line_text = ""
+        self.visible_max_line_length = 0
+        self.visible_longest_line_text = ""
 
     def _display_text(self, line_text):
-        return line_text.rstrip('\r\n')
+        return display_log_line_text(line_text)
 
     def _measured_text(self, line_text):
-        return self._display_text(line_text).rstrip()
+        return measured_log_line_text(line_text)
+
+    def _update_visible_longest_line(self, measured_text):
+        if len(measured_text) > self.visible_max_line_length:
+            self.visible_max_line_length = len(measured_text)
+            self.visible_longest_line_text = measured_text
 
     def _update_longest_line(self, lines):
         for line in lines:
@@ -28,7 +43,20 @@ class LogModel(QAbstractListModel):
             if measured_length > self.max_line_length:
                 self.max_line_length = measured_length
                 self.longest_line_text = measured_text
-        
+
+    def _find_longest_visible_text(self, indices):
+        longest_text = ""
+        longest_length = 0
+        for index in indices:
+            if index >= len(self.all_lines):
+                continue
+            measured_text = self._measured_text(self.all_lines[index])
+            measured_length = len(measured_text)
+            if measured_length > longest_length:
+                longest_length = measured_length
+                longest_text = measured_text
+        return longest_text
+         
     def rowCount(self, parent=QModelIndex()):
         return len(self.visible_indices)
 
@@ -139,12 +167,23 @@ class LogModel(QAbstractListModel):
         self.visible_indices = list(range(len(lines)))
         self.max_line_length = 0
         self.longest_line_text = ""
+        self.visible_max_line_length = 0
+        self.visible_longest_line_text = ""
         self._update_longest_line(lines)
+        self.visible_max_line_length = self.max_line_length
+        self.visible_longest_line_text = self.longest_line_text
         self.endResetModel()
+ 
+    def update_visible_indices(self, indices, widest_visible_text=None):
+        if widest_visible_text is None:
+            widest_visible_text = self._find_longest_visible_text(indices)
+        else:
+            widest_visible_text = self._measured_text(widest_visible_text)
 
-    def update_visible_indices(self, indices):
         self.beginResetModel()
         self.visible_indices = indices
+        self.visible_max_line_length = len(widest_visible_text)
+        self.visible_longest_line_text = widest_visible_text
         self.endResetModel()
     
     def clear(self):
@@ -153,6 +192,8 @@ class LogModel(QAbstractListModel):
         self.visible_indices = []
         self.max_line_length = 0
         self.longest_line_text = ""
+        self.visible_max_line_length = 0
+        self.visible_longest_line_text = ""
         self.endResetModel()
         
     def zoom(self, delta):
@@ -169,12 +210,19 @@ class LogModel(QAbstractListModel):
         
         # Calculate visibility
         new_indices = []
+        widest_new_visible_text = ""
+        widest_new_visible_length = 0
         has_active_filters = any(f.get("active", True) for f in self.filters)
         
         for i, line in enumerate(lines):
             real_idx = start_real_idx + i
             if not has_active_filters:
                 new_indices.append(real_idx)
+                measured_text = self._measured_text(line)
+                measured_length = len(measured_text)
+                if measured_length > widest_new_visible_length:
+                    widest_new_visible_length = measured_length
+                    widest_new_visible_text = measured_text
                 continue
                 
             matched = False
@@ -210,11 +258,18 @@ class LogModel(QAbstractListModel):
             if not is_excluded:
                 if matched or not self.show_only_filtered:
                     new_indices.append(real_idx)
+                    measured_text = self._measured_text(line)
+                    measured_length = len(measured_text)
+                    if measured_length > widest_new_visible_length:
+                        widest_new_visible_length = measured_length
+                        widest_new_visible_text = measured_text
 
         if new_indices:
             first_row_idx = len(self.visible_indices)
             self.beginInsertRows(QModelIndex(), first_row_idx, first_row_idx + len(new_indices) - 1)
             self.visible_indices.extend(new_indices)
             self.endInsertRows()
+            if widest_new_visible_length:
+                self._update_visible_longest_line(widest_new_visible_text)
             return True
         return False
