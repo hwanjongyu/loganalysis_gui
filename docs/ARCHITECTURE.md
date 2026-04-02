@@ -32,12 +32,25 @@ To ensure the UI remains frozen-free (60fps), heavy lifting is delegated to dedi
 *   **`AdbWorker` (QThread)**
     *   **Role**: Data Ingestor.
     *   **Responsibility**: Manages the `adb logcat` subprocess. Buffers high-velocity stream data and emits batched chunks to the UI thread to prevent event-loop flooding.
+    *   **Retention Policy**: Live monitoring keeps only the most recent `MAX_MONITOR_LINES` entries in memory; older lines are trimmed and the current filter view is recalculated.
 
 ### 4. The Presentation Layer: `QTreeView`
 **Role**: Virtualized Renderer.
 **Responsibilities**:
 *   **Virtualization**: Renders *only* the rows currently visible in the viewport.
 *   **Performance**: handling scroll events and painting text/colors requested by the `LogModel`.
+
+---
+
+## 🔄 Thread Ownership & State Flow
+
+The current implementation uses a strict ownership model to keep UI state coherent:
+
+*   **UI thread owns mutable application state**: `LogModel`, filter tabs, enabled/disabled tab state, and status-bar messaging are all mutated from `LogAnalysisMainWindow`.
+*   **`FilterWorker` operates on a request token**: each refilter operation gets a monotonically increasing request id. Completed results are ignored unless they match the latest request, which prevents stale filter results from overwriting newer UI state after clear/open/close operations.
+*   **Live ADB chunks are buffered during refiltering**: while a `FilterWorker` recalculates visibility during monitoring, incoming `adb logcat` chunks are queued in `pending_chunks` and flushed only after the latest filter pass completes. This avoids dropping newly streamed lines when the worker publishes a snapshot.
+*   **`AdbWorker` owns subprocess I/O only**: the worker is responsible for `adb logcat` process management and batched chunk emission, but start/stop/wait decisions remain in the main window.
+*   **State resets invalidate in-flight work**: opening a new file, clearing logs, toggling monitoring, and closing the window invalidate previous filter requests before the model is reset.
 
 ---
 

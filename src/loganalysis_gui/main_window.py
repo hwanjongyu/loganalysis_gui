@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt
 
-from .constants import COLOR_MAP, TEXT_COLOR_MAP, DARK_STYLESHEET
+from .constants import COLOR_MAP, TEXT_COLOR_MAP, DARK_STYLESHEET, MAX_MONITOR_LINES
 from .workers import AdbWorker, FilterWorker
 from .models import LogModel
 from .dialogs import FindDialog, FilterDialog
@@ -41,7 +41,12 @@ class LogAnalysisMainWindow(QMainWindow):
         self.adb_thread = None
         self.is_monitoring = False
         self.is_paused = False
+        self.is_refiltering = False
         self.pending_chunks = []
+        self.filter_request_id = 0
+        self.filter_map_back = {}
+        self.target_source_idx = -1
+        self.scroll_to_bottom_after_refilter = False
         
         self.find_dialog = None
 
@@ -232,6 +237,7 @@ class LogAnalysisMainWindow(QMainWindow):
         self.filter_tab_lists = []
         self.filters = []
         self.tab_enabled = []
+        self.tab_checkboxes = []
         self.add_filter_tab()
 
         filter_panel = QWidget()
@@ -251,6 +257,147 @@ class LogAnalysisMainWindow(QMainWindow):
         container.setLayout(layout)
         self.setCentralWidget(container)
 
+    def _next_filter_request_id(self):
+        self.filter_request_id += 1
+        return self.filter_request_id
+
+    def _invalidate_filter_results(self):
+        self.filter_request_id += 1
+        self.filter_map_back = {}
+        self.target_source_idx = -1
+        self.is_refiltering = False
+
+    def _stop_filter_worker(self):
+        thread = self.filter_thread
+        self.filter_thread = None
+        if thread:
+            thread.stop()
+            if thread.isRunning():
+                thread.wait()
+
+    def _stop_adb_worker(self):
+        thread = self.adb_thread
+        self.adb_thread = None
+        if thread:
+            thread.stop()
+            if thread.isRunning():
+                thread.wait()
+
+    def _effective_model_filters(self):
+        effective_filters = []
+        for tab_idx, filters in enumerate(self.filters):
+            if not self.tab_enabled[tab_idx]:
+                continue
+            effective_filters.extend(filters)
+        return effective_filters
+
+    def _regex_error(self, pattern, case_sensitive):
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            re.compile(pattern, flags)
+        except re.error as error:
+            return str(error)
+        return None
+
+    def _normalize_filter_data(self, filter_data):
+        normalized = {
+            "text": filter_data.get("text", ""),
+            "case_sensitive": filter_data.get("case_sensitive", False),
+            "regex": filter_data.get("regex", False),
+            "exclude": filter_data.get("exclude", False),
+            "bg_color": filter_data.get("bg_color", "None"),
+            "text_color": filter_data.get("text_color", "None"),
+            "active": filter_data.get("active", True),
+        }
+        if "total_matches" in filter_data:
+            normalized["total_matches"] = filter_data["total_matches"]
+        return normalized
+
+    def _validate_loaded_filters(self, loaded_filters):
+        normalized_filters = []
+        invalid_filters = []
+
+        for raw_filter in loaded_filters:
+            if not isinstance(raw_filter, dict):
+                return None, ["Each filter entry must be an object."]
+
+            filter_data = self._normalize_filter_data(raw_filter)
+            if filter_data["regex"]:
+                regex_error = self._regex_error(filter_data["text"], filter_data["case_sensitive"])
+                if regex_error:
+                    invalid_filters.append(f"\"{filter_data['text']}\": {regex_error}")
+
+            normalized_filters.append(filter_data)
+
+        return normalized_filters, invalid_filters
+
+    def _refresh_tab_checkboxes(self):
+        tab_bar = self.filter_tabs.tabBar()
+        self.tab_checkboxes = []
+        for index, enabled in enumerate(self.tab_enabled):
+            checkbox = QCheckBox()
+            checkbox.setProperty("tab_index", index)
+            checkbox.setChecked(enabled)
+            checkbox.setToolTip("Enable/Disable this filter set")
+            checkbox.stateChanged.connect(self._on_tab_checkbox_changed)
+            tab_bar.setTabButton(index, QTabBar.LeftSide, checkbox)
+            self.tab_checkboxes.append(checkbox)
+
+    def _on_tab_checkbox_changed(self, state):
+        checkbox = self.sender()
+        if not isinstance(checkbox, QCheckBox):
+            return
+
+        index = checkbox.property("tab_index")
+        if not isinstance(index, int):
+            return
+
+        self._on_tab_toggled(index, state)
+
+    def _apply_chunk_to_model(self, lines):
+        was_at_bottom = False
+        scrollbar = self.log_view.verticalScrollBar()
+        if scrollbar.value() == scrollbar.maximum():
+            was_at_bottom = True
+
+        data_added = self.log_model.append_chunk(lines)
+        if data_added:
+            self.update_stats()
+            self.update_filter_counts_ui()
+
+        trimmed = self._trim_live_log_buffer_if_needed(was_at_bottom)
+        if data_added and was_at_bottom and not trimmed:
+            self.log_view.scrollToBottom()
+
+    def _flush_pending_chunks(self):
+        if self.is_paused or self.is_refiltering or not self.pending_chunks:
+            return
+
+        chunks = self.pending_chunks
+        self.pending_chunks = []
+        for chunk in chunks:
+            self._apply_chunk_to_model(chunk)
+
+    def _trim_live_log_buffer_if_needed(self, preserve_bottom=False):
+        if not self.is_monitoring:
+            return False
+
+        excess_lines = len(self.log_model.all_lines) - MAX_MONITOR_LINES
+        if excess_lines <= 0:
+            return False
+
+        self._invalidate_filter_results()
+        self.log_model.set_lines(self.log_model.all_lines[excess_lines:])
+        if preserve_bottom:
+            self.scroll_to_bottom_after_refilter = True
+
+        self.status_bar.showMessage(
+            f"Monitoring buffer trimmed to the most recent {MAX_MONITOR_LINES:,} lines.",
+            5000,
+        )
+        self.apply_filters()
+        return True
+
     def set_theme(self, light=True):
         if light:
             self.light_theme_action.setChecked(True)
@@ -264,6 +411,14 @@ class LogAnalysisMainWindow(QMainWindow):
     def add_quick_filter(self):
         text = self.quick_input.text().strip()
         if not text: return
+
+        if self.quick_regex.isChecked():
+            regex_error = self._regex_error(text, self.quick_case.isChecked())
+            if regex_error:
+                message = f"Quick filter regex is invalid:\n{regex_error}"
+                self.status_bar.showMessage(f"Invalid regex: {regex_error}", 5000)
+                QMessageBox.warning(self, "Invalid Regex", message)
+                return
         
         filter_data = {
             "text": text,
@@ -305,24 +460,33 @@ class LogAnalysisMainWindow(QMainWindow):
     def find_in_files(self, text, forward=True, case=False, regex=False):
         if not text:
             return
+
+        if regex:
+            regex_error = self._regex_error(text, case)
+            if regex_error:
+                message = f"Invalid regex: {regex_error}"
+                if self.find_dialog:
+                    self.find_dialog.set_status(message)
+                self.status_bar.showMessage(message, 5000)
+                return
             
         model = self.log_model
-        start_idx = self.log_view.currentIndex().row()
-        if start_idx < 0: start_idx = 0
-        
         visited_count = 0
         total = model.rowCount()
         if total == 0:
             return
 
-        idx = start_idx
+        current_row = self.log_view.currentIndex().row()
+        if current_row < 0:
+            idx = -1 if forward else 0
+        else:
+            idx = current_row
+
         while visited_count < total:
             if forward:
-                idx += 1
-                if idx >= total: idx = 0
+                idx = (idx + 1) % total
             else:
-                idx -= 1
-                if idx < 0: idx = total - 1
+                idx = (idx - 1) % total
             
             real_idx = model.visible_indices[idx]
             line = model.all_lines[real_idx]
@@ -330,10 +494,8 @@ class LogAnalysisMainWindow(QMainWindow):
             match = False
             if regex:
                 flags = 0 if case else re.IGNORECASE
-                try:
-                    if re.search(text, line, flags):
-                        match = True
-                except: pass
+                if re.search(text, line, flags):
+                    match = True
             else:
                 if case:
                     if text in line: match = True
@@ -374,16 +536,11 @@ class LogAnalysisMainWindow(QMainWindow):
     def toggle_adb_monitoring(self):
         style = self.style()
         if not self.is_monitoring:
+            self._stop_filter_worker()
+            self._invalidate_filter_results()
             self.log_model.clear()
             self.pending_chunks = []
-            
-            active_filters = []
-            for tab_idx, filters in enumerate(self.filters):
-                if self.tab_enabled[tab_idx]:
-                    for f in filters:
-                        if f.get("active", True):
-                            active_filters.append(f)
-            self.log_model.filters = active_filters
+            self.log_model.filters = self._effective_model_filters()
             
             self.adb_thread = AdbWorker()
             self.adb_thread.chunk_ready.connect(self.on_adb_chunk)
@@ -398,24 +555,20 @@ class LogAnalysisMainWindow(QMainWindow):
             self.pause_action.setChecked(False)
             self.status_bar.showMessage("Monitoring ADB Logcat...")
         else:
-            if self.adb_thread:
-                self.adb_thread.stop()
-                self.adb_thread.wait()
-                self.adb_thread = None
-            
+            self._stop_adb_worker()
             self.is_monitoring = False
             self.is_paused = False
+            self.is_refiltering = False
             self.adb_monitor_action.setText("Start ADB Logcat")
             self.adb_monitor_action.setIcon(style.standardIcon(QStyle.SP_ComputerIcon))
             self.pause_action.setEnabled(False)
             self.status_bar.showMessage(f"Monitoring stopped.")
             self.update_stats()
-            
-            while self.pending_chunks:
-                chunk = self.pending_chunks.pop(0)
-                self.log_model.append_chunk(chunk)
+            self._flush_pending_chunks()
     
     def clear_logs(self):
+        self._stop_filter_worker()
+        self._invalidate_filter_results()
         self.log_model.clear()
         self.pending_chunks = []
         self.update_stats()
@@ -431,27 +584,14 @@ class LogAnalysisMainWindow(QMainWindow):
             self.status_bar.showMessage("Monitoring Paused (Buffering...)")
         else:
             self.status_bar.showMessage("Resuming...")
-            while self.pending_chunks:
-                chunk = self.pending_chunks.pop(0)
-                self.on_adb_chunk(chunk)
+            self._flush_pending_chunks()
 
     def on_adb_chunk(self, lines):
-        if self.is_paused:
+        if self.is_paused or self.is_refiltering:
             self.pending_chunks.append(lines)
             return
 
-        was_at_bottom = False
-        scrollbar = self.log_view.verticalScrollBar()
-        if scrollbar.value() == scrollbar.maximum():
-            was_at_bottom = True
-            
-        data_added = self.log_model.append_chunk(lines)
-        if data_added:
-            self.update_stats()
-            self.update_filter_counts_ui()
-        
-        if data_added and was_at_bottom:
-            self.log_view.scrollToBottom()
+        self._apply_chunk_to_model(lines)
 
     def on_adb_error(self, message):
         self.toggle_adb_monitoring() 
@@ -503,12 +643,7 @@ class LogAnalysisMainWindow(QMainWindow):
         
         idx = len(self.filter_tab_lists) - 1
         self.filter_tabs.addTab(filter_list, f"Filter Set {idx+1}")
-        
-        cb = QCheckBox()
-        cb.setChecked(True)
-        cb.setToolTip("Enable/Disable this filter set")
-        cb.stateChanged.connect(lambda state, i=idx: self._on_tab_toggled(i, state))
-        self.filter_tabs.tabBar().setTabButton(idx, QTabBar.LeftSide, cb)
+        self._refresh_tab_checkboxes()
         
         self.filter_tabs.setCurrentIndex(idx)
         self.tab_modified.append(False)
@@ -526,6 +661,9 @@ class LogAnalysisMainWindow(QMainWindow):
                     self.filter_tabs.setTabText(index, current_text[1:])
 
     def _on_tab_toggled(self, index, state):
+        if not 0 <= index < len(self.tab_enabled):
+            return
+
         self.tab_enabled[index] = (state == Qt.Checked)
         self.set_tab_modified(index, True)
         self.apply_filters()
@@ -556,6 +694,7 @@ class LogAnalysisMainWindow(QMainWindow):
             del self.tab_enabled[idx]
             del self.tab_modified[idx]
             del self.tab_file_paths[idx]
+            self._refresh_tab_checkboxes()
             self.apply_filters()
 
     def current_filter_list(self):
@@ -587,6 +726,9 @@ class LogAnalysisMainWindow(QMainWindow):
             self, "Open Log File", "", "Log/Text Files (*.log *.txt);;All Files (*)"
         )
         if file_path:
+            self._stop_filter_worker()
+            self._invalidate_filter_results()
+            self.pending_chunks = []
             self.status_bar.showMessage("Loading file...")
             QApplication.setOverrideCursor(Qt.WaitCursor)
             try:
@@ -735,6 +877,23 @@ class LogAnalysisMainWindow(QMainWindow):
                     self.status_bar.showMessage("Invalid filter file format.")
                     return
 
+                normalized_filters, invalid_filters = self._validate_loaded_filters(loaded_set)
+                if normalized_filters is None:
+                    self.status_bar.showMessage("Invalid filter file format.")
+                    QMessageBox.warning(self, "Invalid Filter File", invalid_filters[0])
+                    return
+                if invalid_filters:
+                    details = "\n".join(f"- {item}" for item in invalid_filters[:5])
+                    if len(invalid_filters) > 5:
+                        details += "\n- ..."
+                    QMessageBox.warning(
+                        self,
+                        "Invalid Filter File",
+                        f"Cannot load filters with invalid regular expressions:\n\n{details}",
+                    )
+                    self.status_bar.showMessage("Error loading filters: invalid regex in file.", 5000)
+                    return
+
                 filter_list, filters = self.current_filter_list()
                 filter_list.clear()
                 filters.clear()
@@ -744,13 +903,13 @@ class LogAnalysisMainWindow(QMainWindow):
                     self.filter_tabs.setTabText(idx, tab_name)
                 
                 self.tab_enabled[idx] = tab_enabled
-                cb = self.filter_tabs.tabBar().tabButton(idx, QTabBar.LeftSide)
+                cb = self.tab_checkboxes[idx] if idx < len(self.tab_checkboxes) else None
                 if isinstance(cb, QCheckBox):
                     cb.blockSignals(True)
                     cb.setChecked(tab_enabled)
                     cb.blockSignals(False)
                 
-                for filter_data in loaded_set:
+                for filter_data in normalized_filters:
                     item = QListWidgetItem()
                     self.apply_filter_colors_to_list_item(item, filter_data)
                     filter_list.addItem(item)
@@ -768,7 +927,7 @@ class LogAnalysisMainWindow(QMainWindow):
                 self.status_bar.showMessage(f"Error loading filters: {str(e)}")
 
     def apply_filters(self):
-        all_filters_flat = []
+        self.log_model.filters = self._effective_model_filters()
         self.filter_map_back = {}
         
         flat_idx = 0
@@ -784,23 +943,17 @@ class LogAnalysisMainWindow(QMainWindow):
                 self.filter_map_back[flat_idx] = (tab_idx, filter_idx)
                 all_filters_to_count.append(f_data)
                 flat_idx += 1
-        
-        flattened_originals = []
-        for filters in self.filters:
-            flattened_originals.extend(filters)
-        self.log_model.filters = flattened_originals
+
+        self._stop_filter_worker()
+        request_id = self._next_filter_request_id()
         
         if not self.log_model.all_lines:
             for tab in self.filters:
                 for f in tab:
                     f['total_matches'] = 0
-            self.on_filtering_finished([], 0, [0]*len(all_filters_to_count))
+            self.on_filtering_finished(request_id, [], 0, [0] * len(all_filters_to_count))
             return
-        
-        if self.filter_thread and self.filter_thread.isRunning():
-            self.filter_thread.stop()
-            self.filter_thread.wait()
-        
+
         self.target_source_idx = -1
         current_idx = self.log_view.currentIndex()
         if current_idx.isValid():
@@ -808,18 +961,27 @@ class LogAnalysisMainWindow(QMainWindow):
             if row < len(self.log_model.visible_indices):
                 self.target_source_idx = self.log_model.visible_indices[row]
 
+        self.is_refiltering = self.is_monitoring
         if not self.is_monitoring:
             self.status_bar.showMessage("Refiltering...")
             
         self.filter_thread = FilterWorker(
             self.log_model.all_lines, 
             all_filters_to_count, 
-            self.log_model.show_only_filtered
+            self.log_model.show_only_filtered,
+            request_id
         )
         self.filter_thread.finished_filtering.connect(self.on_filtering_finished)
         self.filter_thread.start()
 
-    def on_filtering_finished(self, visible_indices, match_count, filter_counts=None):
+    def on_filtering_finished(self, request_id, visible_indices, match_count, filter_counts=None):
+        if request_id != self.filter_request_id:
+            return
+
+        if self.sender() is self.filter_thread:
+            self.filter_thread = None
+
+        self.is_refiltering = False
         self.log_model.update_visible_indices(visible_indices)
         
         if hasattr(self, 'target_source_idx') and self.target_source_idx != -1 and visible_indices:
@@ -842,7 +1004,7 @@ class LogAnalysisMainWindow(QMainWindow):
 
         self.update_stats()
         
-        if filter_counts and hasattr(self, 'filter_map_back'):
+        if filter_counts is not None and hasattr(self, 'filter_map_back'):
             for tab in self.filters:
                 for f in tab:
                     f['total_matches'] = 0
@@ -854,6 +1016,13 @@ class LogAnalysisMainWindow(QMainWindow):
                         self.filters[tab_idx][filter_idx]['total_matches'] = count
             
             self.update_filter_counts_ui()
+        else:
+            self.update_filter_counts_ui()
+
+        self._flush_pending_chunks()
+        if self.scroll_to_bottom_after_refilter and self.log_model.rowCount() > 0:
+            self.log_view.scrollToBottom()
+        self.scroll_to_bottom_after_refilter = False
             
     def update_filter_counts_ui(self):
         current_tab_idx = self.filter_tabs.currentIndex()
@@ -869,7 +1038,12 @@ class LogAnalysisMainWindow(QMainWindow):
                       widget.update_display()
         
         if self.is_monitoring:
-             self.status_bar.showMessage(f"Monitoring...")
+             if self.is_paused:
+                  self.status_bar.showMessage("Monitoring Paused (Buffering...)")
+             elif self.is_refiltering:
+                  self.status_bar.showMessage("Refiltering live logs...")
+             else:
+                  self.status_bar.showMessage("Monitoring...")
         else:
              self.status_bar.showMessage(f"Refiltered complete.")
 
@@ -899,10 +1073,16 @@ class LogAnalysisMainWindow(QMainWindow):
                         if self.tab_modified[i]:
                             event.ignore()
                             return
+                self._stop_filter_worker()
+                self._stop_adb_worker()
                 event.accept()
             elif res == QMessageBox.Discard:
+                self._stop_filter_worker()
+                self._stop_adb_worker()
                 event.accept()
             else:
                 event.ignore()
         else:
+            self._stop_filter_worker()
+            self._stop_adb_worker()
             event.accept()

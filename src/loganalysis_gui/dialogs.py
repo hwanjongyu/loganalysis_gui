@@ -1,6 +1,8 @@
+import re
+
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, 
-    QCheckBox, QLabel, QComboBox, QGroupBox, QFormLayout
+    QCheckBox, QLabel, QComboBox, QGroupBox, QFormLayout, QMessageBox
 )
 from PyQt5.QtGui import QColor, QPixmap, QIcon
 from PyQt5.QtCore import Qt
@@ -128,6 +130,21 @@ class FilterDialog(QDialog):
             
         self.update_preview()
 
+    def accept(self):
+        if self.regex.isChecked():
+            flags = 0 if self.case_sensitive.isChecked() else re.IGNORECASE
+            try:
+                re.compile(self.text_input.text(), flags)
+            except re.error as error:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Regex",
+                    f"Cannot save this filter because the regular expression is invalid:\n{error}",
+                )
+                return
+
+        super().accept()
+
     def layout_ui(self):
         main_layout = QVBoxLayout()
         
@@ -217,7 +234,7 @@ class FilterDialog(QDialog):
             else:
                 self.contrast_lbl.setText("")
                 self.contrast_lbl.setToolTip("")
-        except:
+        except ValueError:
             self.contrast_lbl.setText("")
 
     def calculate_contrast(self, hex1, hex2):

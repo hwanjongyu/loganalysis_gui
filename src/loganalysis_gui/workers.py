@@ -51,23 +51,39 @@ class AdbWorker(QThread):
         self.terminate_process()
     
     def terminate_process(self):
-        if self.process:
+        if not self.process:
+            return
+
+        process = self.process
+        self.process = None
+
+        if process.poll() is not None:
+            return
+
+        try:
+            process.terminate()
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
             try:
-                self.process.terminate()
-                self.process.kill()
-            except:
-                pass
-            self.process = None
+                process.kill()
+                process.wait(timeout=1)
+            except (subprocess.TimeoutExpired, OSError) as error:
+                if self.is_running:
+                    self.error_occurred.emit(f"ADB Error: {error}")
+        except OSError as error:
+            if self.is_running:
+                self.error_occurred.emit(f"ADB Error: {error}")
 
 
 class FilterWorker(QThread):
-    finished_filtering = pyqtSignal(list, int, list)
+    finished_filtering = pyqtSignal(int, list, int, list)
     
-    def __init__(self, lines, filters, show_only_filtered):
+    def __init__(self, lines, filters, show_only_filtered, request_id):
         super().__init__()
         self.lines = lines
         self.filters = filters
         self.show_only_filtered = show_only_filtered
+        self.request_id = request_id
         self.is_running = True
 
     def run(self):
@@ -84,11 +100,8 @@ class FilterWorker(QThread):
                 f_data = f.copy()
                 f_data['original_index'] = i 
                 if f["regex"]:
-                    try:
-                        flags = 0 if f["case_sensitive"] else re.IGNORECASE
-                        f_data["compiled_re"] = re.compile(f["text"], flags)
-                    except re.error:
-                        f_data["compiled_re"] = None
+                    flags = 0 if f["case_sensitive"] else re.IGNORECASE
+                    f_data["compiled_re"] = re.compile(f["text"], flags)
                 active_filters.append(f_data)
 
         count = len(self.lines)
@@ -147,7 +160,7 @@ class FilterWorker(QThread):
             elif not self.show_only_filtered:
                 visible_indices.append(i)
         
-        self.finished_filtering.emit(visible_indices, match_count, filter_counts)
+        self.finished_filtering.emit(self.request_id, visible_indices, match_count, filter_counts)
 
     def stop(self):
         self.is_running = False

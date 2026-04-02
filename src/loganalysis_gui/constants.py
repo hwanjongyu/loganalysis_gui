@@ -1,4 +1,6 @@
 # Shared Color Maps and Styles
+MAX_MONITOR_LINES = 200000
+
 COLOR_MAP = {
     "Khaki": "#F0E68C", "Yellow": "#FFFF00", "Gold": "#FFD700", "Cyan": "#00FFFF",
     "Aqua": "#00FFFF", "Green": "#90EE90", "Lime": "#00FF00", "PaleGreen": "#98FB98",

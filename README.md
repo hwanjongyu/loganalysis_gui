@@ -18,6 +18,7 @@ Stream logs directly from connected Android devices via `adb logcat`.
 - **Live Filtering**: Apply complex filters to the stream in real-time.
 - **Auto-Scroll**: Keep up with high-velocity logs automatically.
 - **Start/Pause**: Stop the stream to investigate, then resume without losing context.
+- **Bounded Live Buffer**: Long monitoring sessions keep a rolling in-memory window instead of growing without limit.
 
 ### 🔍 Advanced Filter System
 The heart of LogAnalysisGUI is its powerful multi-layered filtering engine:
@@ -72,7 +73,27 @@ The application follows a robust **threaded architecture** to ensure the main in
 
 ### Running the App
 ```bash
-python src/loganalysis_gui.py
+python src/main.py
+```
+
+`src/loganalysis_gui.py` remains as a compatibility wrapper, but `src/main.py` is the canonical entry point.
+
+### Running Tests
+```bash
+python -m unittest discover -v
+```
+
+### Packaging
+Build the desktop bundle with PyInstaller:
+
+```bash
+pyinstaller loganalysis_gui.spec
+```
+
+If you need Qt plugin diagnostics while debugging a packaged build, set the flag before launching the packaged app:
+
+```bash
+LOGANALYSIS_QT_DEBUG_PLUGINS=1 ./dist/loganalysis_gui
 ```
 
 ---

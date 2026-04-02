@@ -68,11 +68,9 @@ class LogModel(QAbstractListModel):
 
             is_match = False
             if ftr["regex"]:
-                try:
-                    flags = 0 if ftr["case_sensitive"] else re.IGNORECASE
-                    if re.search(ftr["text"], line, flags):
-                        is_match = True
-                except: pass
+                flags = 0 if ftr["case_sensitive"] else re.IGNORECASE
+                if re.search(ftr["text"], line, flags):
+                    is_match = True
             else:
                 if ftr["case_sensitive"]:
                     if ftr["text"] in line:
@@ -166,11 +164,9 @@ class LogModel(QAbstractListModel):
                     continue
                 is_match = False
                 if ftr["regex"]:
-                    try:
-                        flags = 0 if ftr["case_sensitive"] else re.IGNORECASE
-                        if re.search(ftr["text"], line, flags):
-                            is_match = True
-                    except: pass
+                    flags = 0 if ftr["case_sensitive"] else re.IGNORECASE
+                    if re.search(ftr["text"], line, flags):
+                        is_match = True
                 else:
                     if ftr["case_sensitive"]:
                         if ftr["text"] in line:

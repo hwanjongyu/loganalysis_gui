@@ -43,7 +43,7 @@ needed_binaries = find_libs(
 )
 
 a = Analysis(
-    ['src/loganalysis_gui.py'],
+    ['src/main.py'],
     pathex=[],
     binaries=needed_binaries,
     datas=[],
@@ -69,7 +69,7 @@ exe = EXE(
     strip=False,
     upx=True,
     upx_exclude=[],
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
