@@ -27,10 +27,13 @@ The heart of LogAnalysisGUI is its powerful multi-layered filtering engine:
 - **Match Counting**: Instantly see how many times each filter triggers across the dataset.
 - **Persistent Profiles**: Save and load filter sets (JSON) for recurring analysis tasks.
 - **Color Coding**: Customize background and foreground colors for instant visual recognition.
+- **Tab-Local Filter Search**: Narrow large filter sets in-place without changing the actual log-filter result.
+- **Right-Click Filter Actions**: Edit, duplicate, delete, or copy a filter pattern directly from the list.
 
 ### 🎨 Modern & Responsive UI
 - **Dark Mode Support**: Seamlessly switch between light and dark themes.
 - **Tabbed Management**: Organize logic into separate filter tabs for different analysis contexts.
+- **Mode Badges**: Quick Filter toolbar badges show whether you are viewing matches only and whether full-line display is active.
 - **Smart Selection**: Intelligently copy log data with optional line numbers.
 - **Zoom Control**: On-the-fly font size adjustment with `Ctrl +` and `Ctrl -`.
 

@@ -2,6 +2,18 @@ from PyQt5.QtWidgets import QWidget, QHBoxLayout, QCheckBox, QLabel
 from PyQt5.QtCore import Qt, pyqtSignal
 from .constants import COLOR_MAP, TEXT_COLOR_MAP
 
+
+def describe_filter_text(filter_data):
+    text = filter_data["text"]
+    if filter_data["exclude"]:
+        text = f"NOT: {text}"
+    if filter_data["regex"]:
+        text = f"REGEX: {text}"
+    if filter_data["case_sensitive"]:
+        text = f"CASE: {text}"
+    return text
+
+
 class FilterItemWidget(QWidget):
     filter_toggled = pyqtSignal(dict, bool)
 
@@ -31,10 +43,7 @@ class FilterItemWidget(QWidget):
         self.filter_toggled.emit(self.filter_data, checked)
 
     def update_display(self):
-        text = self.filter_data["text"]
-        if self.filter_data["exclude"]: text = f"NOT: {text}"
-        if self.filter_data["regex"]: text = f"REGEX: {text}"
-        if self.filter_data["case_sensitive"]: text = f"CASE: {text}"
+        text = describe_filter_text(self.filter_data)
         self.text_label.setText(text)
         
         count = self.filter_data.get('total_matches', 0)

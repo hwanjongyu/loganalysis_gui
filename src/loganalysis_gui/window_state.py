@@ -1,12 +1,14 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from PyQt5.QtWidgets import QCheckBox, QListWidget
+from PyQt5.QtWidgets import QCheckBox, QLineEdit, QListWidget, QWidget
 
 
 @dataclass
 class FilterTabState:
+    tab_widget: QWidget
     filter_list: QListWidget
+    search_input: QLineEdit
     filters: List[dict] = field(default_factory=list)
     enabled: bool = True
     modified: bool = False

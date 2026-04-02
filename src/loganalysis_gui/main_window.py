@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QWidget, QLineEdit, QCheckBox, 
     QPushButton, QLabel, QHBoxLayout, QListWidget, QSplitter, 
     QListWidgetItem, QTabWidget, QMessageBox, QInputDialog, QTreeView,
-    QAbstractItemView, QToolBar, QStyle, QGroupBox, QFormLayout,
+    QAbstractItemView, QToolBar, QStyle, QGroupBox, QFormLayout, QMenu,
     QHeaderView, QTabBar, QApplication
 )
 from PyQt5.QtGui import QColor, QFontMetrics
@@ -16,7 +16,7 @@ from .constants import COLOR_MAP, TEXT_COLOR_MAP, DARK_STYLESHEET, MAX_MONITOR_L
 from .workers import AdbWorker, FilterWorker
 from .models import LogModel
 from .dialogs import FindDialog, FilterDialog
-from .widgets import FilterItemWidget
+from .widgets import FilterItemWidget, describe_filter_text
 from .window_state import FilterTabState, MainWindowRuntimeState
 
 class LogAnalysisMainWindow(QMainWindow):
@@ -101,11 +101,11 @@ class LogAnalysisMainWindow(QMainWindow):
 
         # View menu
         view_menu = menubar.addMenu("View")
-        show_only_filtered_action = QAction("Show Only Filtered Lines", self, checkable=True)
-        show_only_filtered_action.setChecked(True)
-        show_only_filtered_action.setShortcut("Ctrl+H")
-        show_only_filtered_action.triggered.connect(self.toggle_show_only_filtered)
-        view_menu.addAction(show_only_filtered_action)
+        self.show_only_filtered_action = QAction("Show Only Filtered Lines", self, checkable=True)
+        self.show_only_filtered_action.setChecked(True)
+        self.show_only_filtered_action.setShortcut("Ctrl+H")
+        self.show_only_filtered_action.toggled.connect(self.toggle_show_only_filtered)
+        view_menu.addAction(self.show_only_filtered_action)
         
         show_line_numbers_action = QAction("Show Line Numbers", self, checkable=True)
         show_line_numbers_action.setChecked(True)
@@ -114,7 +114,7 @@ class LogAnalysisMainWindow(QMainWindow):
 
         self.full_line_display_action = QAction("Full Line Display", self, checkable=True)
         self.full_line_display_action.setChecked(self.full_line_display_enabled)
-        self.full_line_display_action.triggered.connect(self.toggle_full_line_display)
+        self.full_line_display_action.toggled.connect(self.toggle_full_line_display)
         view_menu.addAction(self.full_line_display_action)
         
         view_menu.addSeparator()
@@ -199,6 +199,13 @@ class LogAnalysisMainWindow(QMainWindow):
         self.quick_filter_toolbar.addWidget(self.quick_exclude)
 
         self.quick_filter_toolbar.addSeparator()
+        self.quick_filter_toolbar.addWidget(QLabel("  Modes: "))
+        self.show_only_filtered_indicator = QLabel()
+        self.full_line_display_indicator = QLabel()
+        self.quick_filter_toolbar.addWidget(self.show_only_filtered_indicator)
+        self.quick_filter_toolbar.addWidget(self.full_line_display_indicator)
+
+        self.quick_filter_toolbar.addSeparator()
         # Add Monitor Actions to Toolbar
         self.quick_filter_toolbar.addAction(self.adb_monitor_action)
         self.quick_filter_toolbar.addAction(self.pause_action)
@@ -225,6 +232,7 @@ class LogAnalysisMainWindow(QMainWindow):
         self.log_model = LogModel()
         self.log_view.setModel(self.log_model)
         self._apply_log_view_display_mode()
+        self._update_mode_indicators()
 
         # Add selection context menu
         self.log_view.setContextMenuPolicy(Qt.ActionsContextMenu)
@@ -347,6 +355,158 @@ class LogAnalysisMainWindow(QMainWindow):
             tab_bar.setTabButton(index, QTabBar.LeftSide, checkbox)
             tab_state.checkbox = checkbox
 
+    def _create_mode_indicator(self, label, text, active, tooltip):
+        label.setText(text)
+        label.setToolTip(tooltip)
+        label.setStyleSheet(
+            (
+                "QLabel {"
+                "border: 1px solid #2f7d32;"
+                "border-radius: 8px;"
+                "padding: 2px 8px;"
+                "background-color: #d8f3dc;"
+                "color: #1b4332;"
+                "font-weight: bold;"
+                "}"
+            )
+            if active
+            else (
+                "QLabel {"
+                "border: 1px solid #888;"
+                "border-radius: 8px;"
+                "padding: 2px 8px;"
+                "background-color: #f0f0f0;"
+                "color: #555;"
+                "}"
+            )
+        )
+
+    def _update_mode_indicators(self):
+        if hasattr(self, "show_only_filtered_indicator") and hasattr(self, "log_model"):
+            show_only_filtered = self.log_model.show_only_filtered
+            self._create_mode_indicator(
+                self.show_only_filtered_indicator,
+                "Matches only" if show_only_filtered else "All lines",
+                show_only_filtered,
+                "Indicates whether the log view hides lines that do not match filters.",
+            )
+
+        if hasattr(self, "full_line_display_indicator"):
+            self._create_mode_indicator(
+                self.full_line_display_indicator,
+                "Full lines" if self.full_line_display_enabled else "Compact lines",
+                self.full_line_display_enabled,
+                "Indicates whether long lines are shown at full width or in compact mode.",
+            )
+
+    def _filter_matches_search(self, filter_data, query):
+        normalized_query = query.strip().lower()
+        if not normalized_query:
+            return True
+
+        haystacks = [
+            filter_data.get("text", ""),
+            describe_filter_text(filter_data),
+        ]
+        return any(normalized_query in text.lower() for text in haystacks)
+
+    def _update_filter_item_visibility(self, tab_state, item):
+        filter_data = item.data(Qt.UserRole) or {}
+        item.setHidden(
+            not self._filter_matches_search(filter_data, tab_state.search_input.text())
+        )
+
+    def _apply_filter_search(self, tab_state):
+        for index in range(tab_state.filter_list.count()):
+            item = tab_state.filter_list.item(index)
+            self._update_filter_item_visibility(tab_state, item)
+
+    def _build_filter_item(self, filter_data):
+        item = QListWidgetItem()
+        self.apply_filter_colors_to_list_item(item, filter_data)
+
+        widget = FilterItemWidget(filter_data)
+        widget.filter_toggled.connect(self._on_filter_toggled)
+        return item, widget
+
+    def _insert_filter_item(self, tab_state, filter_data, row=None):
+        item, widget = self._build_filter_item(filter_data)
+
+        if row is None or row < 0 or row > tab_state.filter_list.count():
+            row = tab_state.filter_list.count()
+
+        tab_state.filter_list.insertItem(row, item)
+        tab_state.filters.insert(row, filter_data)
+        tab_state.filter_list.setItemWidget(item, widget)
+        self._update_filter_item_visibility(tab_state, item)
+        return item
+
+    def _selected_filter_items(self, tab_state, target_item=None):
+        selected_items = tab_state.filter_list.selectedItems()
+        if target_item is not None and target_item not in selected_items:
+            tab_state.filter_list.clearSelection()
+            target_item.setSelected(True)
+            tab_state.filter_list.setCurrentItem(target_item)
+            selected_items = [target_item]
+        return selected_items
+
+    def _delete_filter_items(self, tab_state, items):
+        rows = sorted(
+            {tab_state.filter_list.row(item) for item in items if item is not None},
+            reverse=True,
+        )
+        if not rows:
+            return
+
+        for row in rows:
+            tab_state.filter_list.takeItem(row)
+            del tab_state.filters[row]
+
+        self.apply_filters()
+        self.set_tab_modified(self.filter_tabs.currentIndex(), True)
+
+    def _duplicate_filter_item(self, tab_state, item):
+        row = tab_state.filter_list.row(item)
+        if row < 0 or row >= len(tab_state.filters):
+            return
+
+        duplicated_filter = self._normalize_filter_data(tab_state.filters[row])
+        duplicated_item = self._insert_filter_item(tab_state, duplicated_filter, row + 1)
+        tab_state.filter_list.setCurrentItem(duplicated_item)
+        duplicated_item.setSelected(True)
+        self.apply_filters()
+        self.set_tab_modified(self.filter_tabs.currentIndex(), True)
+
+    def _copy_filter_pattern(self, tab_state, item):
+        row = tab_state.filter_list.row(item)
+        if row < 0 or row >= len(tab_state.filters):
+            return
+
+        QApplication.clipboard().setText(tab_state.filters[row]["text"])
+        self.status_bar.showMessage("Copied filter pattern to clipboard", 3000)
+
+    def _show_filter_context_menu(self, tab_state, position):
+        item = tab_state.filter_list.itemAt(position)
+        if item is None:
+            return
+
+        selected_items = self._selected_filter_items(tab_state, item)
+        menu = QMenu(self)
+        edit_action = menu.addAction("Edit")
+        duplicate_action = menu.addAction("Duplicate")
+        delete_action = menu.addAction("Delete")
+        copy_action = menu.addAction("Copy Pattern")
+        chosen_action = menu.exec_(tab_state.filter_list.mapToGlobal(position))
+
+        if chosen_action == edit_action:
+            self.edit_filter_dialog(item)
+        elif chosen_action == duplicate_action:
+            self._duplicate_filter_item(tab_state, item)
+        elif chosen_action == delete_action:
+            self._delete_filter_items(tab_state, selected_items)
+        elif chosen_action == copy_action:
+            self._copy_filter_pattern(tab_state, item)
+
     def _on_tab_checkbox_changed(self, state):
         checkbox = self.sender()
         if not isinstance(checkbox, QCheckBox):
@@ -402,6 +562,7 @@ class LogAnalysisMainWindow(QMainWindow):
             self.full_line_display_action.blockSignals(False)
 
         self._update_log_column_width()
+        self._update_mode_indicators()
 
     def _update_log_column_width(self):
         if not hasattr(self, "log_view") or not hasattr(self, "log_model"):
@@ -475,16 +636,7 @@ class LogAnalysisMainWindow(QMainWindow):
             "active": True
         }
         
-        filter_list, filters = self.current_filter_list()
-        
-        item = QListWidgetItem()
-        self.apply_filter_colors_to_list_item(item, filter_data)
-        filter_list.addItem(item)
-        filters.append(filter_data)
-
-        widget = FilterItemWidget(filter_data)
-        widget.filter_toggled.connect(self._on_filter_toggled)
-        filter_list.setItemWidget(item, widget)
+        self._insert_filter_item(self._current_tab_state(), filter_data)
         
         self.apply_filters()
         self.set_tab_modified(self.filter_tabs.currentIndex(), True)
@@ -681,13 +833,34 @@ class LogAnalysisMainWindow(QMainWindow):
         filter_list = QListWidget()
         filter_list.setDragDropMode(QListWidget.InternalMove)
         filter_list.itemDoubleClicked.connect(self.edit_filter_dialog)
+        filter_list.setContextMenuPolicy(Qt.CustomContextMenu)
         filter_list.installEventFilter(self)
         filter_list.model().rowsMoved.connect(lambda: self.sync_filter_order())
-        tab_state = FilterTabState(filter_list=filter_list)
+
+        search_input = QLineEdit()
+        search_input.setPlaceholderText("Search filters in this tab...")
+
+        tab_widget = QWidget()
+        tab_layout = QVBoxLayout(tab_widget)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(6)
+        tab_layout.addWidget(search_input)
+        tab_layout.addWidget(filter_list)
+
+        tab_state = FilterTabState(
+            tab_widget=tab_widget,
+            filter_list=filter_list,
+            search_input=search_input,
+        )
         self.filter_tab_states.append(tab_state)
+
+        search_input.textChanged.connect(lambda _text, state=tab_state: self._apply_filter_search(state))
+        filter_list.customContextMenuRequested.connect(
+            lambda position, state=tab_state: self._show_filter_context_menu(state, position)
+        )
         
         idx = len(self.filter_tab_states) - 1
-        self.filter_tabs.addTab(filter_list, f"Filter Set {idx+1}")
+        self.filter_tabs.addTab(tab_widget, f"Filter Set {idx+1}")
         self._refresh_tab_checkboxes()
         
         self.filter_tabs.setCurrentIndex(idx)
@@ -757,6 +930,7 @@ class LogAnalysisMainWindow(QMainWindow):
 
     def toggle_show_only_filtered(self, checked):
         self.log_model.show_only_filtered = checked
+        self._update_mode_indicators()
         self.apply_filters()
 
     def apply_filter_colors_to_list_item(self, item, filter_data):
@@ -795,20 +969,13 @@ class LogAnalysisMainWindow(QMainWindow):
                 QApplication.restoreOverrideCursor()
 
     def add_filter_dialog(self):
-        filter_list, filters = self.current_filter_list()
+        tab_state = self._current_tab_state()
         dialog = FilterDialog(self)
         if dialog.exec_():
             filter_data = dialog.get_filter_data()
             filter_data["active"] = True
-            
-            item = QListWidgetItem()
-            self.apply_filter_colors_to_list_item(item, filter_data)
-            filter_list.addItem(item)
-            filters.append(filter_data)
 
-            widget = FilterItemWidget(filter_data)
-            widget.filter_toggled.connect(self._on_filter_toggled)
-            filter_list.setItemWidget(item, widget)
+            self._insert_filter_item(tab_state, filter_data)
             
             self.apply_filters()
             self.set_tab_modified(self.filter_tabs.currentIndex(), True)
@@ -818,9 +985,10 @@ class LogAnalysisMainWindow(QMainWindow):
         self.set_tab_modified(self.filter_tabs.currentIndex(), True)
 
     def edit_filter_dialog(self, item):
-        filter_list, filters = self.current_filter_list()
+        tab_state = self._current_tab_state()
+        filter_list = tab_state.filter_list
         idx = filter_list.row(item)
-        filter_data = filters[idx]
+        filter_data = tab_state.filters[idx]
         dialog = FilterDialog(self, filter_data)
         if dialog.exec_():
             new_filter_data = dialog.get_filter_data()
@@ -830,12 +998,14 @@ class LogAnalysisMainWindow(QMainWindow):
             else:
                 new_filter_data["active"] = filter_data.get("active", True)
 
-            filters[idx] = new_filter_data
+            tab_state.filters[idx] = new_filter_data
             self.apply_filter_colors_to_list_item(item, new_filter_data)
 
             if widget:
                 widget.filter_data = new_filter_data
                 widget.update_display()
+
+            self._update_filter_item_visibility(tab_state, item)
             
             self.apply_filters()
             self.set_tab_modified(self.filter_tabs.currentIndex(), True)
@@ -844,13 +1014,10 @@ class LogAnalysisMainWindow(QMainWindow):
         current_tab_state = self._current_tab_state()
         if current_tab_state and source == current_tab_state.filter_list and event.type() == event.KeyPress:
             if event.key() == Qt.Key_Delete:
-                selected_items = current_tab_state.filter_list.selectedItems()
-                for item in selected_items:
-                    idx = current_tab_state.filter_list.row(item)
-                    current_tab_state.filter_list.takeItem(idx)
-                    del current_tab_state.filters[idx]
-                self.apply_filters()
-                self.set_tab_modified(self.filter_tabs.currentIndex(), True)
+                self._delete_filter_items(
+                    current_tab_state,
+                    current_tab_state.filter_list.selectedItems(),
+                )
                 return True
         return super().eventFilter(source, event)
 
@@ -962,17 +1129,10 @@ class LogAnalysisMainWindow(QMainWindow):
                     cb.blockSignals(True)
                     cb.setChecked(tab_enabled)
                     cb.blockSignals(False)
-                
+
                 for filter_data in normalized_filters:
-                    item = QListWidgetItem()
-                    self.apply_filter_colors_to_list_item(item, filter_data)
-                    filter_list.addItem(item)
-                    filters.append(filter_data)
-                    
-                    widget = FilterItemWidget(filter_data)
-                    widget.filter_toggled.connect(self._on_filter_toggled)
-                    filter_list.setItemWidget(item, widget)
-                
+                    self._insert_filter_item(tab_state, filter_data)
+                 
                 self.apply_filters()
                 tab_state.file_path = file_path
                 self.set_tab_modified(idx, False)

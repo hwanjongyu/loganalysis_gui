@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QPoint, Qt
 from PyQt5.QtGui import QFontMetrics
 from PyQt5.QtWidgets import QApplication
 
@@ -72,10 +72,42 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
             metrics.horizontalAdvance(f"{prefix}{content}") + 24,
         )
 
+    def add_filter_item(self, filter_data, *, index=0):
+        tab_state = self.tab_state(index)
+        self.window._insert_filter_item(tab_state, filter_data)
+        return tab_state.filter_list.item(tab_state.filter_list.count() - 1)
+
     def test_full_line_display_starts_disabled(self):
         self.assertFalse(self.window.full_line_display_enabled)
         self.assertFalse(self.window.full_line_display_action.isChecked())
         self.assertEqual(self.window.log_view.textElideMode(), Qt.ElideRight)
+
+    def test_filter_tab_contains_search_box(self):
+        tab_state = self.tab_state(0)
+
+        self.assertEqual(tab_state.search_input.placeholderText(), "Search filters in this tab...")
+        self.assertIs(self.window.filter_tabs.widget(0), tab_state.tab_widget)
+
+    def test_filter_search_hides_non_matching_items_without_changing_filters(self):
+        alpha_item = self.add_filter_item(make_filter("alpha"))
+        beta_item = self.add_filter_item(make_filter("beta"))
+
+        self.tab_state(0).search_input.setText("alp")
+        self.app.processEvents()
+
+        self.assertFalse(alpha_item.isHidden())
+        self.assertTrue(beta_item.isHidden())
+        self.assertEqual([item["text"] for item in self.tab_state(0).filters], ["alpha", "beta"])
+
+    def test_mode_indicators_track_show_only_filtered_and_full_line_display(self):
+        self.assertEqual(self.window.show_only_filtered_indicator.text(), "Matches only")
+        self.assertEqual(self.window.full_line_display_indicator.text(), "Compact lines")
+
+        self.window.show_only_filtered_action.setChecked(False)
+        self.window.full_line_display_action.setChecked(True)
+
+        self.assertEqual(self.window.show_only_filtered_indicator.text(), "All lines")
+        self.assertEqual(self.window.full_line_display_indicator.text(), "Full lines")
 
     def test_disabled_tabs_do_not_reach_model_filters(self):
         self.window.add_filter_tab()
@@ -274,6 +306,69 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.window.log_model.filters = [exclude_filter, include_filter]
         self.window.log_model.append_chunk(["alpha\n"])
         self.assertEqual(self.window.log_model.visible_indices, [0])
+
+    def test_duplicate_filter_item_inserts_copy_after_source(self):
+        source_item = self.add_filter_item(make_filter("alpha"))
+        tab_state = self.tab_state(0)
+
+        self.window._duplicate_filter_item(tab_state, source_item)
+
+        self.assertEqual([item["text"] for item in tab_state.filters], ["alpha", "alpha"])
+        self.assertIsNot(tab_state.filters[0], tab_state.filters[1])
+        self.assertEqual(tab_state.filter_list.currentRow(), 1)
+
+    def test_copy_filter_pattern_places_text_on_clipboard(self):
+        source_item = self.add_filter_item(make_filter("alpha"))
+
+        self.window._copy_filter_pattern(self.tab_state(0), source_item)
+
+        self.assertEqual(self.app.clipboard().text(), "alpha")
+
+    def test_delete_filter_items_removes_selected_rows(self):
+        first_item = self.add_filter_item(make_filter("alpha"))
+        second_item = self.add_filter_item(make_filter("beta"))
+        tab_state = self.tab_state(0)
+        first_item.setSelected(True)
+        second_item.setSelected(True)
+
+        self.window._delete_filter_items(tab_state, [first_item, second_item])
+
+        self.assertEqual(tab_state.filter_list.count(), 0)
+        self.assertEqual(tab_state.filters, [])
+
+    def test_filter_context_menu_delete_uses_clicked_item(self):
+        self.add_filter_item(make_filter("alpha"))
+        second_item = self.add_filter_item(make_filter("beta"))
+        tab_state = self.tab_state(0)
+        second_rect = tab_state.filter_list.visualItemRect(second_item)
+
+        class FakeAction:
+            def __init__(self, text):
+                self._text = text
+
+            def text(self):
+                return self._text
+
+        class FakeMenu:
+            def __init__(self, *_args, **_kwargs):
+                self._actions = []
+
+            def addAction(self, text):
+                action = FakeAction(text)
+                self._actions.append(action)
+                return action
+
+            def exec_(self, *_args, **_kwargs):
+                return next(action for action in self._actions if action.text() == "Delete")
+
+        with patch.object(tab_state.filter_list, "mapToGlobal", return_value=QPoint(5, 5)), patch(
+            "loganalysis_gui.main_window.QMenu",
+            FakeMenu,
+        ):
+            self.window._show_filter_context_menu(tab_state, second_rect.center())
+
+        self.assertEqual(tab_state.filter_list.count(), 1)
+        self.assertEqual(tab_state.filters[0]["text"], "alpha")
 
     def test_invalid_find_regex_sets_status(self):
         self.window.find_dialog = DummyFindDialog()
