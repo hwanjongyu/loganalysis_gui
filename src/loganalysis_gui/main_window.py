@@ -898,8 +898,8 @@ class LogAnalysisMainWindow(QMainWindow):
             tab_state.file_path = file_path
             self.set_tab_modified(idx, False)
             self.status_bar.showMessage(f"Filters from '{tab_name}' saved to {file_path}", 3000)
-        except Exception as e:
-            self.status_bar.showMessage(f"Error saving filters: {str(e)}", 5000)
+        except OSError as error:
+            self.status_bar.showMessage(f"Error saving filters: {error}", 5000)
 
     def load_filters(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -977,8 +977,15 @@ class LogAnalysisMainWindow(QMainWindow):
                 tab_state.file_path = file_path
                 self.set_tab_modified(idx, False)
                 self.status_bar.showMessage(f"Filters loaded into current tab from {file_path}")
-            except Exception as e:
-                self.status_bar.showMessage(f"Error loading filters: {str(e)}")
+            except json.JSONDecodeError:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Filter File",
+                    "Cannot load filters: the selected file is not valid JSON.",
+                )
+                self.status_bar.showMessage("Error loading filters: invalid JSON file.", 5000)
+            except OSError as error:
+                self.status_bar.showMessage(f"Error loading filters: {error}", 5000)
 
     def apply_filters(self):
         self.log_model.filters = self._effective_model_filters()

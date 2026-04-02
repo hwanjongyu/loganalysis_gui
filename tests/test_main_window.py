@@ -3,7 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -111,6 +111,24 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.app.processEvents()
 
         self.assertFalse(self.tab_state(0).enabled)
+
+    def test_delete_filter_tab_stops_active_filter_worker(self):
+        self.window.add_filter_tab()
+        self.tab_state(0).filters.append(make_filter("alpha"))
+        self.tab_state(1).filters.append(make_filter("beta"))
+
+        active_worker = Mock()
+        active_worker.isRunning.return_value = True
+        self.window.filter_thread = active_worker
+
+        self.window.filter_tabs.setCurrentIndex(0)
+        self.window.delete_filter_tab()
+
+        active_worker.stop.assert_called_once()
+        active_worker.wait.assert_called_once()
+        self.assertEqual(len(self.window.filter_tab_states), 1)
+        self.assertEqual(self.tab_state(0).filters[0]["text"], "beta")
+        self.assertEqual(self.tab_state(0).checkbox.property("tab_index"), 0)
 
     def test_stale_filter_results_are_ignored(self):
         self.window.runtime.filter_request_id = 2
@@ -301,6 +319,40 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
             self.assertEqual(self.tab_state(0).filters, [])
         finally:
             os.unlink(filter_path)
+
+    def test_load_filters_reports_invalid_json_and_keeps_existing_filters(self):
+        self.tab_state(0).filters.append(make_filter("keep"))
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            handle.write("{invalid json")
+            filter_path = handle.name
+
+        try:
+            with patch(
+                "loganalysis_gui.main_window.QFileDialog.getOpenFileName",
+                return_value=(filter_path, ""),
+            ), patch("loganalysis_gui.main_window.QMessageBox.warning") as warning:
+                self.window.load_filters()
+
+            warning.assert_called_once()
+            self.assertEqual([item["text"] for item in self.tab_state(0).filters], ["keep"])
+            self.assertEqual(
+                self.window.status_bar.currentMessage(),
+                "Error loading filters: invalid JSON file.",
+            )
+        finally:
+            os.unlink(filter_path)
+
+    def test_save_filters_reports_write_error_without_clearing_modified_state(self):
+        tab_state = self.tab_state(0)
+        tab_state.filters.append(make_filter("alpha"))
+        self.window.set_tab_modified(0, True)
+
+        with patch("builtins.open", side_effect=OSError("disk full")):
+            self.window._do_save(0, "/tmp/filters.json")
+
+        self.assertEqual(self.window.status_bar.currentMessage(), "Error saving filters: disk full")
+        self.assertIsNone(tab_state.file_path)
+        self.assertTrue(tab_state.modified)
 
     def test_save_and_load_filters_round_trip(self):
         filter_data = make_filter("alpha.*", active=False)
