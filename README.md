@@ -12,6 +12,7 @@
 
 ### 🚄 Unparalleled Performance
 Built on a high-speed **Model-View Architecture**, LogAnalysisGUI handles files with millions of lines smoothly. By virtualizing the presentation layer, the UI remains responsive even when processing gigabytes of data.
+- **Background File Loading**: Large log files now load off the UI thread with status-bar progress feedback, so opening them does not freeze the window.
 
 ### 🤖 Real-time ADB Monitoring
 Stream logs directly from connected Android devices via `adb logcat`.
@@ -34,6 +35,7 @@ The heart of LogAnalysisGUI is its powerful multi-layered filtering engine:
 - **Dark Mode Support**: Seamlessly switch between light and dark themes.
 - **Tabbed Management**: Organize logic into separate filter tabs for different analysis contexts.
 - **Mode Badges**: Quick Filter toolbar badges show whether you are viewing matches only and whether full-line display is active.
+- **Load Progress Feedback**: The status bar shows file-open progress, keeps the current log visible until the new file is ready, and keeps the loaded file name visible after transient status updates.
 - **Smart Selection**: Intelligently copy log data with optional line numbers.
 - **Zoom Control**: On-the-fly font size adjustment with `Ctrl +` and `Ctrl -`.
 

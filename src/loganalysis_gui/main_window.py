@@ -1,19 +1,20 @@
 import re
 import json
 import bisect
+import os
 from PyQt5.QtWidgets import (
     QMainWindow, QAction, QFileDialog, QStatusBar,
     QVBoxLayout, QWidget, QLineEdit, QCheckBox, 
     QPushButton, QLabel, QHBoxLayout, QListWidget, QSplitter, 
     QListWidgetItem, QTabWidget, QMessageBox, QInputDialog, QTreeView,
     QAbstractItemView, QToolBar, QStyle, QGroupBox, QFormLayout, QMenu,
-    QHeaderView, QTabBar, QApplication
+    QHeaderView, QTabBar, QApplication, QProgressBar
 )
 from PyQt5.QtGui import QColor, QFontMetrics
 from PyQt5.QtCore import Qt
 
 from .constants import COLOR_MAP, TEXT_COLOR_MAP, DARK_STYLESHEET, MAX_MONITOR_LINES
-from .workers import AdbWorker, FilterWorker
+from .workers import AdbWorker, FileLoadWorker, FilterWorker
 from .models import LogModel
 from .dialogs import FindDialog, FilterDialog
 from .widgets import FilterItemWidget, describe_filter_text
@@ -33,12 +34,22 @@ class LogAnalysisMainWindow(QMainWindow):
         # Permanent Status Widgets
         self.lbl_stats = QLabel("Lines: 0 | Visible: 0")
         self.status_bar.addPermanentWidget(self.lbl_stats)
+        self.loaded_file_label = QLabel()
+        self.loaded_file_label.setVisible(False)
+        self.status_bar.addPermanentWidget(self.loaded_file_label)
+        self.file_load_progress = QProgressBar()
+        self.file_load_progress.setVisible(False)
+        self.file_load_progress.setFixedWidth(150)
+        self.file_load_progress.setTextVisible(True)
+        self.file_load_progress.setFormat("%p%")
+        self.status_bar.addPermanentWidget(self.file_load_progress)
         
         self.create_menu()
         self.init_ui()
         
         self.filter_thread = None
         self.adb_thread = None
+        self.file_load_thread = None
         self.runtime = MainWindowRuntimeState()
         
         self.find_dialog = None
@@ -266,11 +277,32 @@ class LogAnalysisMainWindow(QMainWindow):
         self.runtime.filter_request_id += 1
         return self.runtime.filter_request_id
 
+    def _next_file_load_request_id(self):
+        self.runtime.file_load_request_id += 1
+        return self.runtime.file_load_request_id
+
     def _invalidate_filter_results(self):
         self.runtime.filter_request_id += 1
         self.runtime.filter_map_back = {}
         self.runtime.target_source_idx = -1
         self.runtime.is_refiltering = False
+
+    def _reset_filter_counts(self):
+        for tab_state in self.filter_tab_states:
+            for filter_data in tab_state.filters:
+                filter_data["total_matches"] = 0
+
+    def _update_loaded_file_label(self):
+        file_path = self.runtime.loaded_file_path
+        if not file_path:
+            self.loaded_file_label.clear()
+            self.loaded_file_label.setToolTip("")
+            self.loaded_file_label.setVisible(False)
+            return
+
+        self.loaded_file_label.setText(f"File: {os.path.basename(file_path) or file_path}")
+        self.loaded_file_label.setToolTip(file_path)
+        self.loaded_file_label.setVisible(True)
 
     def _stop_filter_worker(self):
         thread = self.filter_thread
@@ -279,6 +311,65 @@ class LogAnalysisMainWindow(QMainWindow):
             thread.stop()
             if thread.isRunning():
                 thread.wait()
+
+    def _finish_file_load_ui(self):
+        self.runtime.is_loading_file = False
+        self.runtime.loading_file_path = None
+        self.file_load_progress.setVisible(False)
+        self.file_load_progress.setRange(0, 100)
+        self.file_load_progress.setValue(0)
+        self.file_load_progress.setFormat("%p%")
+
+    def _cancel_file_load(self):
+        if not self.runtime.is_loading_file and self.file_load_thread is None:
+            return
+
+        self.runtime.file_load_request_id += 1
+        self.runtime.pending_status_message = None
+
+        thread = self.file_load_thread
+        self.file_load_thread = None
+        self._finish_file_load_ui()
+        if thread:
+            thread.stop()
+            if thread.isRunning():
+                thread.wait()
+
+    def _update_file_load_progress_ui(self, file_path, bytes_read, total_bytes, line_count):
+        file_name = os.path.basename(file_path) or file_path
+        self.file_load_progress.setVisible(True)
+
+        if total_bytes > 0:
+            percent = min(100, int((bytes_read / total_bytes) * 100))
+            self.file_load_progress.setRange(0, 100)
+            self.file_load_progress.setValue(percent)
+            self.file_load_progress.setFormat(f"{percent}%")
+            self.status_bar.showMessage(
+                f"Loading {file_name}... {percent}% ({line_count:,} lines)"
+            )
+            return
+
+        self.file_load_progress.setRange(0, 0)
+        self.file_load_progress.setFormat("")
+        self.status_bar.showMessage(f"Loading {file_name}... ({line_count:,} lines)")
+
+    def _start_file_load(self, file_path):
+        self._stop_filter_worker()
+        self._cancel_file_load()
+        self._invalidate_filter_results()
+        self.runtime.pending_chunks = []
+        self.runtime.pending_status_message = None
+
+        request_id = self._next_file_load_request_id()
+        self.runtime.is_loading_file = True
+        self.runtime.loading_file_path = file_path
+        self._update_file_load_progress_ui(file_path, 0, 0, 0)
+
+        self.file_load_thread = FileLoadWorker(file_path, request_id)
+        self.file_load_thread.progress_updated.connect(self.on_file_load_progress)
+        self.file_load_thread.finished_loading.connect(self.on_file_loaded)
+        self.file_load_thread.load_failed.connect(self.on_file_load_failed)
+        self.file_load_thread.start()
 
     def _stop_adb_worker(self):
         thread = self.adb_thread
@@ -733,8 +824,11 @@ class LogAnalysisMainWindow(QMainWindow):
     def toggle_adb_monitoring(self):
         style = self.style()
         if not self.runtime.is_monitoring:
+            self._cancel_file_load()
             self._stop_filter_worker()
             self._invalidate_filter_results()
+            self.runtime.loaded_file_path = None
+            self._update_loaded_file_label()
             self.log_model.clear()
             self.runtime.pending_chunks = []
             self.log_model.filters = self._effective_model_filters()
@@ -764,15 +858,17 @@ class LogAnalysisMainWindow(QMainWindow):
             self._flush_pending_chunks()
     
     def clear_logs(self):
+        self._cancel_file_load()
         self._stop_filter_worker()
         self._invalidate_filter_results()
+        self.runtime.pending_status_message = None
+        self.runtime.loaded_file_path = None
+        self._update_loaded_file_label()
         self.log_model.clear()
         self._update_log_column_width()
         self.runtime.pending_chunks = []
         self.update_stats()
-        for tab_state in self.filter_tab_states:
-            for f in tab_state.filters:
-                f['total_matches'] = 0
+        self._reset_filter_counts()
         self.update_filter_counts_ui()
         self.status_bar.showMessage("Logs cleared.", 3000)
             
@@ -950,23 +1046,45 @@ class LogAnalysisMainWindow(QMainWindow):
             self, "Open Log File", "", "Log/Text Files (*.log *.txt);;All Files (*)"
         )
         if file_path:
-            self._stop_filter_worker()
-            self._invalidate_filter_results()
-            self.runtime.pending_chunks = []
-            self.status_bar.showMessage("Loading file...")
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            try:
-                with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-                    lines = f.readlines()
-                self.log_model.set_lines(lines)
-                self._update_log_column_width()
-                self.status_bar.showMessage(f"Loaded: {file_path}")
-                self.update_stats()
-                self.apply_filters()
-            except Exception as e:
-                self.status_bar.showMessage(f"Error loading file: {str(e)}")
-            finally:
-                QApplication.restoreOverrideCursor()
+            self._start_file_load(file_path)
+
+    def on_file_load_progress(self, request_id, file_path, bytes_read, total_bytes, line_count):
+        if request_id != self.runtime.file_load_request_id or not self.runtime.is_loading_file:
+            return
+
+        self._update_file_load_progress_ui(file_path, bytes_read, total_bytes, line_count)
+
+    def on_file_loaded(self, request_id, file_path, lines):
+        if request_id != self.runtime.file_load_request_id:
+            return
+
+        if self.sender() is self.file_load_thread:
+            self.file_load_thread = None
+
+        self._finish_file_load_ui()
+        self.runtime.loaded_file_path = file_path
+        self._update_loaded_file_label()
+        self.log_model.set_lines(lines)
+        self._update_log_column_width()
+        self.update_stats()
+        self.runtime.pending_status_message = f"Loaded: {file_path} ({len(lines):,} lines)"
+        self.apply_filters()
+
+    def on_file_load_failed(self, request_id, file_path, message):
+        if request_id != self.runtime.file_load_request_id:
+            return
+
+        if self.sender() is self.file_load_thread:
+            self.file_load_thread = None
+
+        self._finish_file_load_ui()
+        self.runtime.pending_status_message = None
+        self.status_bar.showMessage(f"Error loading file: {message}", 5000)
+        QMessageBox.warning(
+            self,
+            "Open File Error",
+            f"Cannot load '{file_path}':\n\n{message}",
+        )
 
     def add_filter_dialog(self):
         tab_state = self._current_tab_state()
@@ -1168,9 +1286,7 @@ class LogAnalysisMainWindow(QMainWindow):
         request_id = self._next_filter_request_id()
         
         if not self.log_model.all_lines:
-            for tab_state in self.filter_tab_states:
-                for f in tab_state.filters:
-                    f['total_matches'] = 0
+            self._reset_filter_counts()
             self.on_filtering_finished(request_id, [], 0, [0] * len(all_filters_to_count), "")
             return
 
@@ -1273,6 +1389,11 @@ class LogAnalysisMainWindow(QMainWindow):
                 self.status_bar.showMessage("Refiltering live logs...")
             else:
                 self.status_bar.showMessage("Monitoring...")
+        elif self.runtime.is_loading_file:
+            return
+        elif self.runtime.pending_status_message:
+            self.status_bar.showMessage(self.runtime.pending_status_message, 5000)
+            self.runtime.pending_status_message = None
         else:
             self.status_bar.showMessage(f"Refiltered complete.")
 
@@ -1302,16 +1423,19 @@ class LogAnalysisMainWindow(QMainWindow):
                         if self._tab_state(i).modified:
                             event.ignore()
                             return
+                self._cancel_file_load()
                 self._stop_filter_worker()
                 self._stop_adb_worker()
                 event.accept()
             elif res == QMessageBox.Discard:
+                self._cancel_file_load()
                 self._stop_filter_worker()
                 self._stop_adb_worker()
                 event.accept()
             else:
                 event.ignore()
         else:
+            self._cancel_file_load()
             self._stop_filter_worker()
             self._stop_adb_worker()
             event.accept()

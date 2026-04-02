@@ -46,6 +46,7 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.window = LogAnalysisMainWindow()
 
     def tearDown(self):
+        self.window._cancel_file_load()
         self.window._stop_filter_worker()
         self.window._stop_adb_worker()
         self.window.deleteLater()
@@ -170,6 +171,96 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.window.on_filtering_finished(1, [], 0, [0])
 
         self.assertEqual(self.window.log_model.visible_indices, [0])
+
+    def test_file_load_progress_updates_status_and_progress_bar(self):
+        self.window.runtime.file_load_request_id = 1
+        self.window.runtime.is_loading_file = True
+
+        self.window.on_file_load_progress(1, "/tmp/sample.log", 50, 100, 12)
+
+        self.assertFalse(self.window.file_load_progress.isHidden())
+        self.assertEqual(self.window.file_load_progress.value(), 50)
+        self.assertEqual(self.window.file_load_progress.format(), "50%")
+        self.assertEqual(
+            self.window.status_bar.currentMessage(),
+            "Loading sample.log... 50% (12 lines)",
+        )
+
+    def test_stale_file_load_result_is_ignored(self):
+        self.window.runtime.file_load_request_id = 2
+        self.window.runtime.is_loading_file = True
+        self.window.log_model.set_lines(["current\n"])
+
+        self.window.on_file_loaded(1, "/tmp/new.log", ["new\n"])
+
+        self.assertEqual(self.window.log_model.all_lines, ["current\n"])
+        self.assertTrue(self.window.runtime.is_loading_file)
+
+    def test_file_load_completion_updates_model_and_status(self):
+        self.window.runtime.file_load_request_id = 1
+        self.window.runtime.is_loading_file = True
+        self.window.runtime.loading_file_path = "/tmp/sample.log"
+        self.window.file_load_progress.setVisible(True)
+
+        self.window.on_file_loaded(1, "/tmp/sample.log", ["alpha\n", "beta\n"])
+        self.wait_for_filtering()
+
+        self.assertEqual(self.window.log_model.all_lines, ["alpha\n", "beta\n"])
+        self.assertFalse(self.window.runtime.is_loading_file)
+        self.assertTrue(self.window.file_load_progress.isHidden())
+        self.assertEqual(self.window.loaded_file_label.text(), "File: sample.log")
+        self.assertEqual(self.window.loaded_file_label.toolTip(), "/tmp/sample.log")
+        self.assertEqual(
+            self.window.status_bar.currentMessage(),
+            "Loaded: /tmp/sample.log (2 lines)",
+        )
+
+    def test_loaded_file_label_persists_after_refilter_status_changes(self):
+        self.window.runtime.file_load_request_id = 1
+        self.window.runtime.is_loading_file = True
+
+        self.window.on_file_loaded(1, "/tmp/sample.log", ["alpha\n", "beta\n"])
+        self.wait_for_filtering()
+        self.window.apply_filters()
+        self.wait_for_filtering()
+
+        self.assertEqual(self.window.status_bar.currentMessage(), "Refiltered complete.")
+        self.assertEqual(self.window.loaded_file_label.text(), "File: sample.log")
+        self.assertEqual(self.window.loaded_file_label.toolTip(), "/tmp/sample.log")
+
+    def test_file_load_error_preserves_current_lines(self):
+        self.window.log_model.set_lines(["current\n"])
+        self.window.runtime.file_load_request_id = 1
+        self.window.runtime.is_loading_file = True
+        self.window.file_load_progress.setVisible(True)
+
+        with patch("loganalysis_gui.main_window.QMessageBox.warning") as warning:
+            self.window.on_file_load_failed(1, "/tmp/missing.log", "File not found.")
+
+        warning.assert_called_once()
+        self.assertEqual(self.window.log_model.all_lines, ["current\n"])
+        self.assertFalse(self.window.runtime.is_loading_file)
+        self.assertTrue(self.window.file_load_progress.isHidden())
+        self.assertEqual(
+            self.window.status_bar.currentMessage(),
+            "Error loading file: File not found.",
+        )
+
+    def test_clear_logs_cancels_active_file_load(self):
+        active_worker = Mock()
+        active_worker.isRunning.return_value = True
+        self.window.file_load_thread = active_worker
+        self.window.runtime.is_loading_file = True
+        self.window.file_load_progress.setVisible(True)
+
+        self.window.clear_logs()
+
+        active_worker.stop.assert_called_once()
+        active_worker.wait.assert_called_once()
+        self.assertIsNone(self.window.file_load_thread)
+        self.assertFalse(self.window.runtime.is_loading_file)
+        self.assertTrue(self.window.file_load_progress.isHidden())
+        self.assertTrue(self.window.loaded_file_label.isHidden())
 
     def test_stale_filter_width_candidate_is_ignored(self):
         self.window.toggle_full_line_display(True)

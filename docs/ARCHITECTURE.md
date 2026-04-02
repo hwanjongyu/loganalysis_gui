@@ -18,7 +18,7 @@ The application follows a **Model-View-Controller (modified)** pattern tailored 
 **Role**: Application Controller.
 **Responsibilities**:
 *   **Lifecycle Management**: Starts and stops the application, manages window state.
-*   **Worker Management**: Spawns, connects, and terminates background threads (`AdbWorker`, `FilterWorker`).
+*   **Worker Management**: Spawns, connects, and terminates background threads (`AdbWorker`, `FilterWorker`, `FileLoadWorker`).
 *   **Input Handling**: Captures user intent (Menu clicks, Filter toggles) and routes them to the Model.
 *   **Feedback**: Updates the `QStatusBar` and handles modal dialogs (`FilterDialog`).
 *   **State Composition**: Delegates filter-tab metadata and runtime controller flags to `window_state.py` so tab enable/modified/file-path state and monitoring/refilter state are grouped instead of spread across parallel lists and loose attributes.
@@ -30,6 +30,11 @@ To ensure the UI remains frozen-free (60fps), heavy lifting is delegated to dedi
     *   **Role**: Search Engine.
     *   **Responsibility**: Iterates through the full dataset (millions of lines) to verify Regex/String matches against active filters. Returns specific indices to show.
     *   **Shared Rules**: Reuses the same `filter_engine` matching and include/exclude precedence rules as the live append and model styling paths so filter behavior stays consistent across threads.
+
+*   **`FileLoadWorker` (QThread)**
+    *   **Role**: File Ingestor.
+    *   **Responsibility**: Reads selected log files off the UI thread, emits incremental progress, and returns the full in-memory line list only after the file is fully loaded.
+    *   **UX Contract**: Keeps the previous log visible while a replacement file is loading and relies on request-id invalidation so stale load completions cannot overwrite newer user actions.
     
 *   **`AdbWorker` (QThread)**
     *   **Role**: Data Ingestor.
@@ -51,6 +56,7 @@ The current implementation uses a strict ownership model to keep UI state cohere
 *   **UI thread owns mutable application state**: `LogModel`, filter tabs, enabled/disabled tab state, and status-bar messaging are all mutated from `LogAnalysisMainWindow`.
 *   **Window controller state is grouped by responsibility**: `FilterTabState` owns per-tab widgets/filters/metadata, and `MainWindowRuntimeState` owns monitoring, refiltering, pending chunk buffering, and request-id bookkeeping.
 *   **`FilterWorker` operates on a request token**: each refilter operation gets a monotonically increasing request id. Completed results are ignored unless they match the latest request, which prevents stale filter results from overwriting newer UI state after clear/open/close operations.
+*   **`FileLoadWorker` also operates on a request token**: opening a different file, clearing logs, starting monitoring, or closing the window invalidates earlier file-load completions before they can replace the current model.
 *   **Filter semantics are centralized**: filter matching, active-filter handling, and include/exclude precedence now live in `filter_engine.py` and are shared by `FilterWorker`, tooltips/colors in `LogModel`, and incremental live append filtering.
 *   **Live ADB chunks are buffered during refiltering**: while a `FilterWorker` recalculates visibility during monitoring, incoming `adb logcat` chunks are queued in `pending_chunks` and flushed only after the latest filter pass completes. This avoids dropping newly streamed lines when the worker publishes a snapshot.
 *   **`AdbWorker` owns subprocess I/O only**: the worker is responsible for `adb logcat` process management and batched chunk emission, but start/stop/wait decisions remain in the main window.

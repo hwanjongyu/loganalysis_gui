@@ -1,7 +1,76 @@
+import os
 import subprocess
 from PyQt5.QtCore import QThread, pyqtSignal
 from .filter_engine import evaluate_line, prepare_filters
 from .models import measured_log_line_text
+
+
+class FileLoadWorker(QThread):
+    progress_updated = pyqtSignal(int, str, int, int, int)
+    finished_loading = pyqtSignal(int, str, list)
+    load_failed = pyqtSignal(int, str, str)
+
+    def __init__(self, file_path, request_id, *, chunk_size=262144, progress_step=1048576):
+        super().__init__()
+        self.file_path = file_path
+        self.request_id = request_id
+        self.chunk_size = chunk_size
+        self.progress_step = max(progress_step, 1)
+        self.is_running = True
+
+    def run(self):
+        try:
+            total_bytes = os.path.getsize(self.file_path)
+            bytes_read = 0
+            next_progress_bytes = 0
+            pending_bytes = b""
+            lines = []
+
+            with open(self.file_path, "rb") as handle:
+                while self.is_running:
+                    chunk = handle.read(self.chunk_size)
+                    if not chunk:
+                        break
+
+                    bytes_read += len(chunk)
+                    pending_bytes += chunk
+                    line_parts = pending_bytes.split(b"\n")
+                    pending_bytes = line_parts.pop()
+
+                    for line_bytes in line_parts:
+                        lines.append(line_bytes.decode("utf-8", errors="replace") + "\n")
+
+                    if bytes_read >= next_progress_bytes:
+                        self.progress_updated.emit(
+                            self.request_id,
+                            self.file_path,
+                            bytes_read,
+                            total_bytes,
+                            len(lines),
+                        )
+                        next_progress_bytes = bytes_read + self.progress_step
+
+            if not self.is_running:
+                return
+
+            if pending_bytes:
+                lines.append(pending_bytes.decode("utf-8", errors="replace"))
+
+            self.progress_updated.emit(
+                self.request_id,
+                self.file_path,
+                total_bytes,
+                total_bytes,
+                len(lines),
+            )
+            self.finished_loading.emit(self.request_id, self.file_path, lines)
+        except FileNotFoundError:
+            self.load_failed.emit(self.request_id, self.file_path, "File not found.")
+        except OSError as error:
+            self.load_failed.emit(self.request_id, self.file_path, str(error))
+
+    def stop(self):
+        self.is_running = False
 
 class AdbWorker(QThread):
     chunk_ready = pyqtSignal(list)
