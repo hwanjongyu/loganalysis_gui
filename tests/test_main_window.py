@@ -51,6 +51,9 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.window.deleteLater()
         self.app.processEvents()
 
+    def tab_state(self, index=0):
+        return self.window._tab_state(index)
+
     def wait_for_filtering(self):
         thread = self.window.filter_thread
         if thread is not None:
@@ -76,9 +79,9 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
 
     def test_disabled_tabs_do_not_reach_model_filters(self):
         self.window.add_filter_tab()
-        self.window.filters[0].append(make_filter("alpha"))
-        self.window.filters[1].append(make_filter("beta"))
-        self.window.tab_enabled[1] = False
+        self.tab_state(0).filters.append(make_filter("alpha"))
+        self.tab_state(1).filters.append(make_filter("beta"))
+        self.tab_state(1).enabled = False
 
         self.window.apply_filters()
 
@@ -103,14 +106,14 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.window.filter_tabs.setCurrentIndex(0)
         self.window.delete_filter_tab()
 
-        remaining_checkbox = self.window.tab_checkboxes[0]
+        remaining_checkbox = self.tab_state(0).checkbox
         remaining_checkbox.setChecked(False)
         self.app.processEvents()
 
-        self.assertEqual(self.window.tab_enabled, [False])
+        self.assertFalse(self.tab_state(0).enabled)
 
     def test_stale_filter_results_are_ignored(self):
-        self.window.filter_request_id = 2
+        self.window.runtime.filter_request_id = 2
         self.window.log_model.set_lines(["alpha\n"])
         self.window.log_model.update_visible_indices([0])
 
@@ -120,7 +123,7 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
 
     def test_stale_filter_width_candidate_is_ignored(self):
         self.window.toggle_full_line_display(True)
-        self.window.filter_request_id = 2
+        self.window.runtime.filter_request_id = 2
         self.window.log_model.set_lines(["short\n", "other\n"])
         self.window.log_model.update_visible_indices([0], "short")
         self.window._update_log_column_width()
@@ -132,22 +135,22 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.log_view.header().sectionSize(0), expected_width)
 
     def test_live_chunks_buffer_during_refilter_and_flush_afterward(self):
-        self.window.is_monitoring = True
-        self.window.is_refiltering = True
+        self.window.runtime.is_monitoring = True
+        self.window.runtime.is_refiltering = True
 
         self.window.on_adb_chunk(["alpha\n"])
-        self.assertEqual(self.window.pending_chunks, [["alpha\n"]])
+        self.assertEqual(self.window.runtime.pending_chunks, [["alpha\n"]])
         self.assertEqual(self.window.log_model.all_lines, [])
 
-        self.window.is_refiltering = False
+        self.window.runtime.is_refiltering = False
         self.window._flush_pending_chunks()
 
-        self.assertEqual(self.window.pending_chunks, [])
+        self.assertEqual(self.window.runtime.pending_chunks, [])
         self.assertEqual(self.window.log_model.all_lines, ["alpha\n"])
         self.assertEqual(self.window.log_model.visible_indices, [0])
 
     def test_monitoring_trims_old_lines_after_limit(self):
-        self.window.is_monitoring = True
+        self.window.runtime.is_monitoring = True
 
         with patch("loganalysis_gui.main_window.MAX_MONITOR_LINES", 3), patch.object(
             self.window, "apply_filters"
@@ -206,7 +209,7 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
 
         self.window.toggle_full_line_display(True)
         self.window.log_model.set_lines([f"{visible_line}\n", f"{hidden_line}\n"])
-        self.window.filters[0].append(make_filter(visible_line))
+        self.tab_state(0).filters.append(make_filter(visible_line))
 
         self.window.apply_filters()
         self.wait_for_filtering()
@@ -223,7 +226,7 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         wider_visible_line = f"keep {'y' * 120}"
 
         self.window.toggle_full_line_display(True)
-        self.window.filters[0].append(make_filter("keep"))
+        self.tab_state(0).filters.append(make_filter("keep"))
         self.window.log_model.set_lines([f"{visible_line}\n"])
         self.window.apply_filters()
         self.wait_for_filtering()
@@ -269,7 +272,7 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
             self.window.add_quick_filter()
 
         warning.assert_called_once()
-        self.assertEqual(self.window.filters[0], [])
+        self.assertEqual(self.tab_state(0).filters, [])
 
     def test_filter_dialog_rejects_invalid_regex(self):
         dialog = FilterDialog(self.window)
@@ -295,7 +298,7 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
                 self.window.load_filters()
 
             warning.assert_called_once()
-            self.assertEqual(self.window.filters[0], [])
+            self.assertEqual(self.tab_state(0).filters, [])
         finally:
             os.unlink(filter_path)
 
@@ -310,23 +313,24 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
                 "text_color": "Black",
             }
         )
-        self.window.filters[0].append(filter_data)
-        self.window.tab_enabled[0] = False
-        self.window.tab_checkboxes[0].blockSignals(True)
-        self.window.tab_checkboxes[0].setChecked(False)
-        self.window.tab_checkboxes[0].blockSignals(False)
+        tab_state = self.tab_state(0)
+        tab_state.filters.append(filter_data)
+        tab_state.enabled = False
+        tab_state.checkbox.blockSignals(True)
+        tab_state.checkbox.setChecked(False)
+        tab_state.checkbox.blockSignals(False)
 
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             filter_path = handle.name
 
         try:
             self.window._do_save(0, filter_path)
-            self.window.filters[0].clear()
-            self.window.filter_tab_lists[0].clear()
-            self.window.tab_enabled[0] = True
-            self.window.tab_checkboxes[0].blockSignals(True)
-            self.window.tab_checkboxes[0].setChecked(True)
-            self.window.tab_checkboxes[0].blockSignals(False)
+            tab_state.filters.clear()
+            tab_state.filter_list.clear()
+            tab_state.enabled = True
+            tab_state.checkbox.blockSignals(True)
+            tab_state.checkbox.setChecked(True)
+            tab_state.checkbox.blockSignals(False)
 
             with patch(
                 "loganalysis_gui.main_window.QFileDialog.getOpenFileName",
@@ -334,7 +338,7 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
             ):
                 self.window.load_filters()
 
-            loaded_filter = self.window.filters[0][0]
+            loaded_filter = self.tab_state(0).filters[0]
             self.assertEqual(loaded_filter["text"], "alpha.*")
             self.assertTrue(loaded_filter["case_sensitive"])
             self.assertTrue(loaded_filter["regex"])
@@ -342,7 +346,7 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
             self.assertEqual(loaded_filter["bg_color"], "Yellow")
             self.assertEqual(loaded_filter["text_color"], "Black")
             self.assertFalse(loaded_filter["active"])
-            self.assertFalse(self.window.tab_enabled[0])
+            self.assertFalse(self.tab_state(0).enabled)
         finally:
             os.unlink(filter_path)
 

@@ -21,6 +21,7 @@ The application follows a **Model-View-Controller (modified)** pattern tailored 
 *   **Worker Management**: Spawns, connects, and terminates background threads (`AdbWorker`, `FilterWorker`).
 *   **Input Handling**: Captures user intent (Menu clicks, Filter toggles) and routes them to the Model.
 *   **Feedback**: Updates the `QStatusBar` and handles modal dialogs (`FilterDialog`).
+*   **State Composition**: Delegates filter-tab metadata and runtime controller flags to `window_state.py` so tab enable/modified/file-path state and monitoring/refilter state are grouped instead of spread across parallel lists and loose attributes.
 
 ### 3. The Workhorses: `Background Threads`
 To ensure the UI remains frozen-free (60fps), heavy lifting is delegated to dedicated workers.
@@ -48,6 +49,7 @@ To ensure the UI remains frozen-free (60fps), heavy lifting is delegated to dedi
 The current implementation uses a strict ownership model to keep UI state coherent:
 
 *   **UI thread owns mutable application state**: `LogModel`, filter tabs, enabled/disabled tab state, and status-bar messaging are all mutated from `LogAnalysisMainWindow`.
+*   **Window controller state is grouped by responsibility**: `FilterTabState` owns per-tab widgets/filters/metadata, and `MainWindowRuntimeState` owns monitoring, refiltering, pending chunk buffering, and request-id bookkeeping.
 *   **`FilterWorker` operates on a request token**: each refilter operation gets a monotonically increasing request id. Completed results are ignored unless they match the latest request, which prevents stale filter results from overwriting newer UI state after clear/open/close operations.
 *   **Filter semantics are centralized**: filter matching, active-filter handling, and include/exclude precedence now live in `filter_engine.py` and are shared by `FilterWorker`, tooltips/colors in `LogModel`, and incremental live append filtering.
 *   **Live ADB chunks are buffered during refiltering**: while a `FilterWorker` recalculates visibility during monitoring, incoming `adb logcat` chunks are queued in `pending_chunks` and flushed only after the latest filter pass completes. This avoids dropping newly streamed lines when the worker publishes a snapshot.
