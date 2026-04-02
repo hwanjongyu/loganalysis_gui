@@ -51,6 +51,11 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.window.deleteLater()
         self.app.processEvents()
 
+    def test_full_line_display_starts_disabled(self):
+        self.assertFalse(self.window.full_line_display_enabled)
+        self.assertFalse(self.window.full_line_display_action.isChecked())
+        self.assertEqual(self.window.log_view.textElideMode(), Qt.ElideRight)
+
     def test_disabled_tabs_do_not_reach_model_filters(self):
         self.window.add_filter_tab()
         self.window.filters[0].append(make_filter("alpha"))
@@ -121,21 +126,47 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         apply_filters.assert_called_once()
         self.assertEqual(self.window.log_model.all_lines, ["2\n", "3\n", "4\n"])
 
-    def test_long_lines_disable_elision_and_expand_column_width(self):
-        initial_width = self.window.log_view.header().sectionSize(0)
-
+    def test_compact_mode_keeps_column_at_viewport_width(self):
         self.window.on_adb_chunk(["x" * 500 + "\n"])
 
+        self.assertEqual(self.window.log_view.textElideMode(), Qt.ElideRight)
+        self.assertEqual(
+            self.window.log_view.header().sectionSize(0),
+            self.window.log_view.viewport().width(),
+        )
+
+    def test_view_menu_action_enables_full_line_display(self):
+        initial_width = self.window.log_view.header().sectionSize(0)
+
+        self.window.full_line_display_action.trigger()
+        self.window.on_adb_chunk(["x" * 500 + "\n"])
+
+        self.assertTrue(self.window.full_line_display_enabled)
+        self.assertTrue(self.window.full_line_display_action.isChecked())
         self.assertEqual(self.window.log_view.textElideMode(), Qt.ElideNone)
         self.assertGreater(self.window.log_view.header().sectionSize(0), initial_width)
 
+    def test_view_menu_action_restores_compact_mode(self):
+        self.window.full_line_display_action.trigger()
+        self.window.on_adb_chunk(["x" * 500 + "\n"])
+
+        self.window.full_line_display_action.trigger()
+
+        self.assertFalse(self.window.full_line_display_enabled)
+        self.assertFalse(self.window.full_line_display_action.isChecked())
+        self.assertEqual(self.window.log_view.textElideMode(), Qt.ElideRight)
+        self.assertEqual(
+            self.window.log_view.header().sectionSize(0),
+            self.window.log_view.viewport().width(),
+        )
+
     def test_column_width_ignores_trailing_padding(self):
         content = "value" * 100
+        self.window.toggle_full_line_display(True)
         self.window.on_adb_chunk([content + (" " * 200) + "\n"])
 
         metrics = QFontMetrics(self.window.log_model.font)
         expected_width = max(
-            400,
             self.window.log_view.viewport().width(),
             metrics.horizontalAdvance(f"{1:6d} | {content}") + 24,
         )

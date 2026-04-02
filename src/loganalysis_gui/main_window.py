@@ -29,6 +29,7 @@ class LogAnalysisMainWindow(QMainWindow):
         
         self.tab_modified = []
         self.tab_file_paths = []
+        self.full_line_display_enabled = False
         
         # Permanent Status Widgets
         self.lbl_stats = QLabel("Lines: 0 | Visible: 0")
@@ -118,6 +119,11 @@ class LogAnalysisMainWindow(QMainWindow):
         show_line_numbers_action.setChecked(True)
         show_line_numbers_action.triggered.connect(self.toggle_line_numbers)
         view_menu.addAction(show_line_numbers_action)
+
+        self.full_line_display_action = QAction("Full Line Display", self, checkable=True)
+        self.full_line_display_action.setChecked(self.full_line_display_enabled)
+        self.full_line_display_action.triggered.connect(self.toggle_full_line_display)
+        view_menu.addAction(self.full_line_display_action)
         
         view_menu.addSeparator()
         zoom_in_action = QAction("Zoom In", self)
@@ -220,14 +226,13 @@ class LogAnalysisMainWindow(QMainWindow):
         self.log_view.setRootIsDecorated(False)
         self.log_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.log_view.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.log_view.setTextElideMode(Qt.ElideNone)
         self.log_view.header().setStretchLastSection(False)
         self.log_view.header().setSectionResizeMode(QHeaderView.Interactive)
         self.log_view.header().setDefaultSectionSize(400) 
         
         self.log_model = LogModel()
         self.log_view.setModel(self.log_model)
-        self._update_log_column_width()
+        self._apply_log_view_display_mode()
 
         # Add selection context menu
         self.log_view.setContextMenuPolicy(Qt.ActionsContextMenu)
@@ -382,20 +387,42 @@ class LogAnalysisMainWindow(QMainWindow):
         for chunk in chunks:
             self._apply_chunk_to_model(chunk)
 
+    def _base_log_column_width(self):
+        viewport_width = self.log_view.viewport().width()
+        if viewport_width > 0:
+            return viewport_width
+        return self.log_view.header().defaultSectionSize()
+
+    def _apply_log_view_display_mode(self):
+        if not hasattr(self, "log_view"):
+            return
+
+        elide_mode = Qt.ElideNone if self.full_line_display_enabled else Qt.ElideRight
+        self.log_view.setTextElideMode(elide_mode)
+
+        if hasattr(self, "full_line_display_action"):
+            self.full_line_display_action.blockSignals(True)
+            self.full_line_display_action.setChecked(self.full_line_display_enabled)
+            self.full_line_display_action.blockSignals(False)
+
+        self._update_log_column_width()
+
     def _update_log_column_width(self):
         if not hasattr(self, "log_view") or not hasattr(self, "log_model"):
             return
 
-        metrics = QFontMetrics(self.log_model.font)
-        prefix = ""
-        if self.log_model.show_line_numbers:
-            max_line_number = max(len(self.log_model.all_lines), 1)
-            prefix = f"{max_line_number:6d} | "
+        width = self._base_log_column_width()
+        if self.full_line_display_enabled:
+            metrics = QFontMetrics(self.log_model.font)
+            prefix = ""
+            if self.log_model.show_line_numbers:
+                max_line_number = max(len(self.log_model.all_lines), 1)
+                prefix = f"{max_line_number:6d} | "
 
-        sample_text = f"{prefix}{self.log_model.longest_line_text}"
-        content_width = metrics.horizontalAdvance(sample_text) + 24
-        viewport_width = self.log_view.viewport().width()
-        width = max(400, viewport_width, content_width)
+            sample_text = f"{prefix}{self.log_model.longest_line_text}"
+            content_width = metrics.horizontalAdvance(sample_text) + 24
+            width = max(width, content_width)
+
         self.log_view.header().resizeSection(0, width)
 
     def _trim_live_log_buffer_if_needed(self, preserve_bottom=False):
@@ -727,6 +754,10 @@ class LogAnalysisMainWindow(QMainWindow):
         self.log_model.show_line_numbers = checked
         self.log_model.layoutChanged.emit()
         self._update_log_column_width()
+
+    def toggle_full_line_display(self, checked):
+        self.full_line_display_enabled = checked
+        self._apply_log_view_display_mode()
 
     def zoom_log(self, delta):
         self.log_model.zoom(delta)
@@ -1114,3 +1145,7 @@ class LogAnalysisMainWindow(QMainWindow):
             self._stop_filter_worker()
             self._stop_adb_worker()
             event.accept()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_log_column_width()
