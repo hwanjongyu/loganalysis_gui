@@ -4,6 +4,8 @@ from loganalysis_gui.main_window import LogAnalysisMainWindow
 
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName("loganalysis")
+    app.setDesktopFileName("loganalysis")
     window = LogAnalysisMainWindow()
     window.show()
     sys.exit(app.exec_())
