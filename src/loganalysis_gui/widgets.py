@@ -28,12 +28,15 @@ class FilterItemWidget(QWidget):
         self.checkbox.toggled.connect(self._on_checkbox_toggled)
 
         self.text_label = QLabel()
+        self.desc_label = QLabel()
         self.count_label = QLabel()
         self.text_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.desc_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.count_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         
         layout.addWidget(self.checkbox)
-        layout.addWidget(self.text_label, 1)
+        layout.addWidget(self.text_label)
+        layout.addWidget(self.desc_label, 1)
         layout.addWidget(self.count_label)
         
         self.update_display()
@@ -52,7 +55,24 @@ class FilterItemWidget(QWidget):
 
         bg_color_name = self.filter_data.get("bg_color", "None")
         text_color_name = self.filter_data.get("text_color", "None")
-        style = ""
-        if bg_color_name != "None": style += f"background-color: {COLOR_MAP.get(bg_color_name, bg_color_name)};"
+        
+        bg_style = ""
+        if bg_color_name != "None":
+            bg_style = f"background-color: {COLOR_MAP.get(bg_color_name, bg_color_name)};"
+            
+        style = bg_style
         if text_color_name != "None": style += f"color: {TEXT_COLOR_MAP.get(text_color_name, text_color_name)};"
         self.text_label.setStyleSheet(style)
+
+        desc = self.filter_data.get("description", "")
+        if desc:
+            self.desc_label.setText(f" // {desc}")
+            self.desc_label.setStyleSheet(bg_style + "color: #888888; font-style: italic; font-size: 9pt;")
+            self.desc_label.setVisible(True)
+            self.setToolTip(desc)
+            self.text_label.setToolTip(desc)
+        else:
+            self.desc_label.clear()
+            self.desc_label.setVisible(False)
+            self.setToolTip("")
+            self.text_label.setToolTip("")

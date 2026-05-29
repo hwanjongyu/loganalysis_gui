@@ -405,6 +405,7 @@ class LogAnalysisMainWindow(QMainWindow):
             "bg_color": filter_data.get("bg_color", "None"),
             "text_color": filter_data.get("text_color", "None"),
             "active": filter_data.get("active", True),
+            "description": filter_data.get("description", ""),
         }
         if "total_matches" in filter_data:
             normalized["total_matches"] = filter_data["total_matches"]

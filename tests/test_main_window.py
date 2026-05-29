@@ -615,6 +615,22 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         bg_cleared = self.window.log_model.data(self.window.log_model.index(0, 0), Qt.BackgroundRole)
         self.assertIsNone(bg_cleared)
 
+    def test_filter_description_roundtrip_and_tooltip(self):
+        filter_data = make_filter("pattern")
+        filter_data["description"] = "Filter for pattern matching"
+        
+        item = self.add_filter_item(filter_data)
+        tab_state = self.tab_state(0)
+        
+        normalized = self.window._normalize_filter_data(tab_state.filters[-1])
+        self.assertEqual(normalized["description"], "Filter for pattern matching")
+        
+        widget = tab_state.filter_list.itemWidget(item)
+        self.assertEqual(widget.toolTip(), "Filter for pattern matching")
+        self.assertEqual(widget.text_label.toolTip(), "Filter for pattern matching")
+        self.assertEqual(widget.desc_label.text(), " // Filter for pattern matching")
+        self.assertFalse(widget.desc_label.isHidden())
+
 
 if __name__ == "__main__":
     unittest.main()

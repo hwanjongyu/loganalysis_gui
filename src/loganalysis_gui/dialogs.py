@@ -89,6 +89,9 @@ class FilterDialog(QDialog):
         self.text_input = QLineEdit()
         self.text_input.setPlaceholderText("Enter text to match...")
         
+        self.desc_input = QLineEdit()
+        self.desc_input.setPlaceholderText("Enter optional description...")
+        
         # Options
         self.case_sensitive = QCheckBox("Case Sensitive")
         self.regex = QCheckBox("Regex")
@@ -141,6 +144,7 @@ class FilterDialog(QDialog):
         
         if filter_data:
             self.text_input.setText(filter_data.get("text", ""))
+            self.desc_input.setText(filter_data.get("description", ""))
             self.case_sensitive.setChecked(filter_data.get("case_sensitive", False))
             self.regex.setChecked(filter_data.get("regex", False))
             self.exclude.setChecked(filter_data.get("exclude", False))
@@ -174,7 +178,11 @@ class FilterDialog(QDialog):
         # 1. Matching Group
         match_group = QGroupBox("Match Criteria")
         match_layout = QVBoxLayout()
-        match_layout.addWidget(self.text_input)
+        
+        form_layout_match = QFormLayout()
+        form_layout_match.addRow("Pattern:", self.text_input)
+        form_layout_match.addRow("Description:", self.desc_input)
+        match_layout.addLayout(form_layout_match)
         
         opts_layout = QHBoxLayout()
         opts_layout.addWidget(self.case_sensitive)
@@ -283,5 +291,6 @@ class FilterDialog(QDialog):
             "regex": self.regex.isChecked(),
             "exclude": self.exclude.isChecked(),
             "bg_color": self.bg_color.currentText(),
-            "text_color": self.text_color.currentText()
+            "text_color": self.text_color.currentText(),
+            "description": self.desc_input.text()
         }
