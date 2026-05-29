@@ -43,6 +43,29 @@ class FindDialog(QDialog):
         self.status_lbl.setStyleSheet("color: red")
         layout.addWidget(self.status_lbl)
 
+        # Signals for real-time highlighting
+        self.input_field.textChanged.connect(self._on_search_params_changed)
+        self.chk_case.toggled.connect(self._on_search_params_changed)
+        self.chk_regex.toggled.connect(self._on_search_params_changed)
+
+    def _on_search_params_changed(self):
+        if hasattr(self.parent(), "update_search_highlights"):
+            self.parent().update_search_highlights(
+                self.input_field.text(),
+                self.chk_case.isChecked(),
+                self.chk_regex.isChecked()
+            )
+
+    def hideEvent(self, event):
+        if hasattr(self.parent(), "clear_search_highlights"):
+            self.parent().clear_search_highlights()
+        super().hideEvent(event)
+
+    def closeEvent(self, event):
+        if hasattr(self.parent(), "clear_search_highlights"):
+            self.parent().clear_search_highlights()
+        super().closeEvent(event)
+
     def find_next(self):
         self.parent().find_in_files(self.input_field.text(), forward=True, 
                                    case=self.chk_case.isChecked(), regex=self.chk_regex.isChecked())

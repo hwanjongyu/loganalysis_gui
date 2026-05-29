@@ -1,3 +1,4 @@
+import mmap
 import os
 import subprocess
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -21,40 +22,44 @@ class FileLoadWorker(QThread):
     def run(self):
         try:
             total_bytes = os.path.getsize(self.file_path)
-            bytes_read = 0
-            next_progress_bytes = 0
-            pending_bytes = b""
             lines = []
 
+            if total_bytes == 0:
+                self.progress_updated.emit(
+                    self.request_id,
+                    self.file_path,
+                    0,
+                    0,
+                    0,
+                )
+                self.finished_loading.emit(self.request_id, self.file_path, [])
+                return
+
+            bytes_read = 0
+            next_progress_bytes = 0
+
             with open(self.file_path, "rb") as handle:
-                while self.is_running:
-                    chunk = handle.read(self.chunk_size)
-                    if not chunk:
-                        break
+                with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    while self.is_running:
+                        line_bytes = mm.readline()
+                        if not line_bytes:
+                            break
 
-                    bytes_read += len(chunk)
-                    pending_bytes += chunk
-                    line_parts = pending_bytes.split(b"\n")
-                    pending_bytes = line_parts.pop()
+                        bytes_read += len(line_bytes)
+                        lines.append(line_bytes.decode("utf-8", errors="replace"))
 
-                    for line_bytes in line_parts:
-                        lines.append(line_bytes.decode("utf-8", errors="replace") + "\n")
-
-                    if bytes_read >= next_progress_bytes:
-                        self.progress_updated.emit(
-                            self.request_id,
-                            self.file_path,
-                            bytes_read,
-                            total_bytes,
-                            len(lines),
-                        )
-                        next_progress_bytes = bytes_read + self.progress_step
+                        if bytes_read >= next_progress_bytes:
+                            self.progress_updated.emit(
+                                self.request_id,
+                                self.file_path,
+                                bytes_read,
+                                total_bytes,
+                                len(lines),
+                            )
+                            next_progress_bytes = bytes_read + self.progress_step
 
             if not self.is_running:
                 return
-
-            if pending_bytes:
-                lines.append(pending_bytes.decode("utf-8", errors="replace"))
 
             self.progress_updated.emit(
                 self.request_id,

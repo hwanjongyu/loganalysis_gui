@@ -2,6 +2,16 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Pattern, Sequence, Tuple
 
+_REGEX_CACHE: Dict[Tuple[str, bool], Pattern[str]] = {}
+
+
+def get_compiled_regex(pattern: str, case_sensitive: bool) -> Pattern[str]:
+    key = (pattern, case_sensitive)
+    if key not in _REGEX_CACHE:
+        flags = 0 if case_sensitive else re.IGNORECASE
+        _REGEX_CACHE[key] = re.compile(pattern, flags)
+    return _REGEX_CACHE[key]
+
 
 @dataclass(frozen=True)
 class PreparedFilter:
@@ -18,8 +28,7 @@ def prepare_filters(filters: Sequence[Dict[str, Any]]) -> List[PreparedFilter]:
 
         compiled_re = None
         if filter_data["regex"]:
-            flags = 0 if filter_data["case_sensitive"] else re.IGNORECASE
-            compiled_re = re.compile(filter_data["text"], flags)
+            compiled_re = get_compiled_regex(filter_data["text"], filter_data["case_sensitive"])
 
         prepared_filters.append(
             PreparedFilter(
@@ -39,8 +48,7 @@ def filter_matches_line(
     if filter_data["regex"]:
         regex = compiled_re
         if regex is None:
-            flags = 0 if filter_data["case_sensitive"] else re.IGNORECASE
-            regex = re.compile(filter_data["text"], flags)
+            regex = get_compiled_regex(filter_data["text"], filter_data["case_sensitive"])
         return bool(regex.search(line))
 
     if filter_data["case_sensitive"]:

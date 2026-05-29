@@ -241,6 +241,7 @@ class LogAnalysisMainWindow(QMainWindow):
         self.log_view.header().setDefaultSectionSize(400) 
         
         self.log_model = LogModel()
+        self.log_model.is_dark_theme = False
         self.log_view.setModel(self.log_model)
         self._apply_log_view_display_mode()
         self._update_mode_indicators()
@@ -696,6 +697,8 @@ class LogAnalysisMainWindow(QMainWindow):
         return True
 
     def set_theme(self, light=True):
+        if hasattr(self, "log_model"):
+            self.log_model.is_dark_theme = not light
         if light:
             self.light_theme_action.setChecked(True)
             self.dark_theme_action.setChecked(False)
@@ -704,6 +707,20 @@ class LogAnalysisMainWindow(QMainWindow):
             self.light_theme_action.setChecked(False)
             self.dark_theme_action.setChecked(True)
             QApplication.instance().setStyleSheet(DARK_STYLESHEET)
+        if hasattr(self, "log_model"):
+            self.log_model.layoutChanged.emit()
+
+    def update_search_highlights(self, query, case, regex):
+        if hasattr(self, "log_model"):
+            self.log_model.search_query = query
+            self.log_model.search_case = case
+            self.log_model.search_regex = regex
+            self.log_model.layoutChanged.emit()
+
+    def clear_search_highlights(self):
+        if hasattr(self, "log_model"):
+            self.log_model.search_query = ""
+            self.log_model.layoutChanged.emit()
 
     def add_quick_filter(self):
         text = self.quick_input.text().strip()

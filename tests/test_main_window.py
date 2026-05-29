@@ -588,6 +588,33 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         finally:
             os.unlink(filter_path)
 
+    def test_soft_find_highlights_and_theme_sync(self):
+        self.window.log_model.set_lines(["matching log line\n", "other log line\n"])
+        self.window.log_model.update_visible_indices([0, 1])
+        
+        self.assertFalse(self.window.log_model.is_dark_theme)
+        
+        self.window.update_search_highlights("matching", case=False, regex=False)
+        self.assertEqual(self.window.log_model.search_query, "matching")
+        
+        bg_matching = self.window.log_model.data(self.window.log_model.index(0, 0), Qt.BackgroundRole)
+        bg_other = self.window.log_model.data(self.window.log_model.index(1, 0), Qt.BackgroundRole)
+        
+        self.assertEqual(bg_matching.name().upper(), "#FFF9C4")
+        self.assertIsNone(bg_other)
+        
+        self.window.set_theme(light=False)
+        self.assertTrue(self.window.log_model.is_dark_theme)
+        
+        bg_matching_dark = self.window.log_model.data(self.window.log_model.index(0, 0), Qt.BackgroundRole)
+        self.assertEqual(bg_matching_dark.name().upper(), "#3E2723")
+        
+        self.window.clear_search_highlights()
+        self.assertEqual(self.window.log_model.search_query, "")
+        
+        bg_cleared = self.window.log_model.data(self.window.log_model.index(0, 0), Qt.BackgroundRole)
+        self.assertIsNone(bg_cleared)
+
 
 if __name__ == "__main__":
     unittest.main()

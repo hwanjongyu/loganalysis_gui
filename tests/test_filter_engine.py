@@ -73,6 +73,16 @@ class FilterEngineTests(unittest.TestCase):
         self.assertTrue(filter_matches_line("alpha\n", case_insensitive_filter))
         self.assertTrue(filter_matches_line("ALPHA42\n", regex_filter))
 
+    def test_regex_compilation_uses_cache(self):
+        from loganalysis_gui.filter_engine import get_compiled_regex, _REGEX_CACHE
+        _REGEX_CACHE.clear()
+
+        regex1 = get_compiled_regex("alpha.*", case_sensitive=True)
+        regex2 = get_compiled_regex("alpha.*", case_sensitive=True)
+
+        self.assertIs(regex1, regex2)
+        self.assertEqual(len(_REGEX_CACHE), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

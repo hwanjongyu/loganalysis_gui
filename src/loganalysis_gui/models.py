@@ -24,6 +24,10 @@ class LogModel(QAbstractListModel):
         self.longest_line_text = ""
         self.visible_max_line_length = 0
         self.visible_longest_line_text = ""
+        self.search_query = ""
+        self.search_case = False
+        self.search_regex = False
+        self.is_dark_theme = True
 
     def _display_text(self, line_text):
         return display_log_line_text(line_text)
@@ -60,6 +64,23 @@ class LogModel(QAbstractListModel):
     def rowCount(self, parent=QModelIndex()):
         return len(self.visible_indices)
 
+    def _is_search_match(self, line):
+        if not self.search_query:
+            return False
+        
+        if self.search_regex:
+            try:
+                from .filter_engine import get_compiled_regex
+                regex = get_compiled_regex(self.search_query, self.search_case)
+                return bool(regex.search(line))
+            except Exception:
+                return False
+        else:
+            if self.search_case:
+                return self.search_query in line
+            else:
+                return self.search_query.lower() in line.lower()
+
     def data(self, index, role):
         if not index.isValid():
             return None
@@ -80,7 +101,12 @@ class LogModel(QAbstractListModel):
         if role == Qt.FontRole:
             return self.font
 
-        if role == Qt.BackgroundRole or role == Qt.ForegroundRole:
+        if role == Qt.BackgroundRole:
+            if self.search_query and self._is_search_match(line_text):
+                return QColor("#3E2723") if self.is_dark_theme else QColor("#FFF9C4")
+            return self._get_color(line_text, role)
+
+        if role == Qt.ForegroundRole:
             return self._get_color(line_text, role)
 
         if role == Qt.ToolTipRole:
