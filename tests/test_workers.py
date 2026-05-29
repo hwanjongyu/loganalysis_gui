@@ -42,6 +42,11 @@ class FileLoadWorkerTests(unittest.TestCase):
 
         self.assertEqual(errors, [(3, file_path, "File not found.")])
 
+    def test_adb_worker_serial_targeting(self):
+        from loganalysis_gui.workers import AdbWorker
+        worker = AdbWorker(device_serial="test-serial-1234")
+        self.assertEqual(worker.device_serial, "test-serial-1234")
+
 
 if __name__ == "__main__":
     unittest.main()

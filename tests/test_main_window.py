@@ -672,6 +672,11 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.assertFalse(tab_state.filters[0]["exclude"])
         self.assertEqual(tab_state.filters[0]["description"], "Quick context filter")
 
+    def test_device_selector_toolbar_widgets(self):
+        self.assertIsNotNone(self.window.device_selector)
+        self.assertIsNotNone(self.window.btn_refresh_devices)
+        self.assertEqual(self.window.device_selector.toolTip(), "Target ADB Device Serial")
+
 
 if __name__ == "__main__":
     unittest.main()

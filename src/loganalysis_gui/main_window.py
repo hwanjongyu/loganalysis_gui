@@ -2,13 +2,14 @@ import re
 import json
 import bisect
 import os
+import subprocess
 from PyQt5.QtWidgets import (
     QMainWindow, QAction, QFileDialog, QStatusBar,
     QVBoxLayout, QWidget, QLineEdit, QCheckBox, 
     QPushButton, QLabel, QHBoxLayout, QListWidget, QSplitter, 
     QListWidgetItem, QTabWidget, QMessageBox, QInputDialog, QTreeView,
     QAbstractItemView, QToolBar, QStyle, QGroupBox, QFormLayout, QMenu,
-    QHeaderView, QTabBar, QApplication, QProgressBar
+    QHeaderView, QTabBar, QApplication, QProgressBar, QComboBox
 )
 from PyQt5.QtGui import QColor, QFontMetrics
 from PyQt5.QtCore import Qt
@@ -217,6 +218,22 @@ class LogAnalysisMainWindow(QMainWindow):
         self.quick_filter_toolbar.addWidget(self.full_line_display_indicator)
 
         self.quick_filter_toolbar.addSeparator()
+
+        # Add Device Selector to Toolbar
+        self.device_selector = QComboBox()
+        self.device_selector.setFixedWidth(130)
+        self.device_selector.setToolTip("Target ADB Device Serial")
+
+        self.btn_refresh_devices = QPushButton()
+        self.btn_refresh_devices.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self.btn_refresh_devices.setToolTip("Scan for connected ADB Devices")
+        self.btn_refresh_devices.clicked.connect(self.refresh_adb_devices)
+
+        self.quick_filter_toolbar.addWidget(QLabel("  Device: "))
+        self.quick_filter_toolbar.addWidget(self.device_selector)
+        self.quick_filter_toolbar.addWidget(self.btn_refresh_devices)
+
+        self.quick_filter_toolbar.addSeparator()
         # Add Monitor Actions to Toolbar
         self.quick_filter_toolbar.addAction(self.adb_monitor_action)
         self.quick_filter_toolbar.addAction(self.pause_action)
@@ -273,6 +290,7 @@ class LogAnalysisMainWindow(QMainWindow):
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
+        self.refresh_adb_devices()
 
     def _next_filter_request_id(self):
         self.runtime.filter_request_id += 1
@@ -902,7 +920,11 @@ class LogAnalysisMainWindow(QMainWindow):
             self.runtime.pending_chunks = []
             self.log_model.filters = self._effective_model_filters()
             
-            self.adb_thread = AdbWorker()
+            serial = None
+            if self.device_selector.isEnabled() and self.device_selector.currentText() not in ["No Devices Found", "ADB Not Found", "Scan Error"]:
+                serial = self.device_selector.currentText()
+
+            self.adb_thread = AdbWorker(device_serial=serial)
             self.adb_thread.chunk_ready.connect(self.on_adb_chunk)
             self.adb_thread.error_occurred.connect(self.on_adb_error)
             self.adb_thread.start()
@@ -913,7 +935,10 @@ class LogAnalysisMainWindow(QMainWindow):
             self.adb_monitor_action.setIcon(style.standardIcon(QStyle.SP_MediaStop))
             self.pause_action.setEnabled(True)
             self.pause_action.setChecked(False)
-            self.status_bar.showMessage("Monitoring ADB Logcat...")
+            if serial:
+                self.status_bar.showMessage(f"Monitoring ADB Device: {serial}...")
+            else:
+                self.status_bar.showMessage("Monitoring ADB Logcat...")
         else:
             self._stop_adb_worker()
             self.runtime.is_monitoring = False
@@ -925,6 +950,36 @@ class LogAnalysisMainWindow(QMainWindow):
             self.status_bar.showMessage(f"Monitoring stopped.")
             self.update_stats()
             self._flush_pending_chunks()
+
+    def refresh_adb_devices(self):
+        self.device_selector.clear()
+        try:
+            output = subprocess.check_output(['adb', 'devices'], universal_newlines=True, encoding='utf-8', errors='replace')
+            lines = output.strip().split('\n')
+            devices = []
+            for line in lines[1:]:
+                if not line.strip():
+                    continue
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] == 'device':
+                    devices.append(parts[0])
+            
+            if devices:
+                self.device_selector.addItems(devices)
+                self.device_selector.setEnabled(True)
+                self.status_bar.showMessage(f"Found {len(devices)} ADB devices.", 3000)
+            else:
+                self.device_selector.addItem("No Devices Found")
+                self.device_selector.setEnabled(False)
+                self.status_bar.showMessage("No ADB devices connected.", 3000)
+        except FileNotFoundError:
+            self.device_selector.addItem("ADB Not Found")
+            self.device_selector.setEnabled(False)
+            self.status_bar.showMessage("ADB not found in system PATH.", 3000)
+        except Exception as e:
+            self.device_selector.addItem("Scan Error")
+            self.device_selector.setEnabled(False)
+            self.status_bar.showMessage(f"ADB device scan error: {e}", 3000)
     
     def clear_logs(self):
         self._cancel_file_load()

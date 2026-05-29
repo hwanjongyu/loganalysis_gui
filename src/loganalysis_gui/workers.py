@@ -81,15 +81,21 @@ class AdbWorker(QThread):
     chunk_ready = pyqtSignal(list)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self):
+    def __init__(self, device_serial=None):
         super().__init__()
         self.is_running = True
         self.process = None
+        self.device_serial = device_serial
 
     def run(self):
         try:
+            cmd = ['adb']
+            if self.device_serial:
+                cmd.extend(['-s', self.device_serial])
+            cmd.extend(['logcat', '-v', 'threadtime'])
+
             self.process = subprocess.Popen(
-                ['adb', 'logcat', '-v', 'threadtime'],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 universal_newlines=True, 

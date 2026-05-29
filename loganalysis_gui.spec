@@ -51,7 +51,19 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=['src/runtime_hook.py'],
-    excludes=[],
+    excludes=[
+        'PyQt5.QtWebEngine',
+        'PyQt5.QtWebEngineWidgets',
+        'PyQt5.QtMultimedia',
+        'PyQt5.QtMultimediaWidgets',
+        'PyQt5.QtQml',
+        'PyQt5.QtQuick',
+        'PyQt5.Qt3D',
+        'PyQt5.QtSensors',
+        'PyQt5.QtBluetooth',
+        'PyQt5.QtWebKit',
+        'PyQt5.QtWebKitWidgets'
+    ],
     noarchive=False,
     optimize=0,
 )

@@ -20,6 +20,7 @@ Stream logs directly from connected Android devices via `adb logcat`.
 - **Auto-Scroll**: Keep up with high-velocity logs automatically.
 - **Start/Pause**: Stop the stream to investigate, then resume without losing context.
 - **Bounded Live Buffer**: Long monitoring sessions keep a rolling in-memory window instead of growing without limit.
+- **Multi-Device Target Selector**: Scan connected emulators and devices dynamically, selecting and targeting streams via specific serials (`adb -s <serial> logcat`) right from the toolbar.
 
 ### 🔍 Advanced Filter System
 The heart of LogAnalysisGUI is its powerful multi-layered filtering engine:
@@ -30,6 +31,7 @@ The heart of LogAnalysisGUI is its powerful multi-layered filtering engine:
 - **Color Coding**: Customize background and foreground colors for instant visual recognition.
 - **Tab-Local Filter Search**: Narrow large filter sets in-place without changing the actual log-filter result.
 - **Right-Click Filter Actions**: Edit, duplicate, delete, or copy a filter pattern directly from the list.
+- **Context-Sensitive Log Filters**: Right-click directly on any log row to instantly generate and append an Include or Exclude filter matching that exact string into your active tab.
 
 ### 🎨 Modern & Responsive UI
 - **Dark Mode Support**: Seamlessly switch between light and dark themes.
@@ -38,6 +40,7 @@ The heart of LogAnalysisGUI is its powerful multi-layered filtering engine:
 - **Load Progress Feedback**: The status bar shows file-open progress, keeps the current log visible until the new file is ready, and keeps the loaded file name visible after transient status updates.
 - **Smart Selection**: Intelligently copy log data with optional line numbers.
 - **Zoom Control**: On-the-fly font size adjustment with `Ctrl +` and `Ctrl -`.
+- **Theme-Aware Contrast Verification**: Dynamic contrast previews that adapt to whether a light or dark theme is active, ensuring WCAG accessibility warnings are always accurate.
 
 ---
 
@@ -89,7 +92,7 @@ python -m unittest discover -v
 ```
 
 ### Packaging
-Build the desktop bundle with PyInstaller:
+Build the highly optimized, lightweight desktop bundle with PyInstaller (configured to exclude unused heavy Qt modules, reducing output standalone binary to under 45MB):
 
 ```bash
 pyinstaller loganalysis_gui.spec
