@@ -247,8 +247,8 @@ class LogAnalysisMainWindow(QMainWindow):
         self._update_mode_indicators()
 
         # Add selection context menu
-        self.log_view.setContextMenuPolicy(Qt.ActionsContextMenu)
-        self.log_view.addAction(self.copy_action)
+        self.log_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.log_view.customContextMenuRequested.connect(self.show_log_context_menu)
 
         self.filter_tabs = QTabWidget()
         self.filter_tabs.setTabBarAutoHide(False)
@@ -838,6 +838,57 @@ class LogAnalysisMainWindow(QMainWindow):
             clipboard = QApplication.clipboard()
             clipboard.setText("\n".join(lines))
             self.status_bar.showMessage(f"Copied {len(lines)} lines to clipboard", 3000)
+
+    def show_log_context_menu(self, position):
+        menu = QMenu(self)
+        
+        copy_act = menu.addAction("Copy Selection")
+        copy_act.triggered.connect(self.copy_selection)
+        
+        selection_model = self.log_view.selectionModel()
+        selected_indexes = selection_model.selectedRows()
+        
+        selected_text = ""
+        if len(selected_indexes) == 1:
+            idx = selected_indexes[0]
+            if idx.isValid():
+                row = idx.row()
+                if row < len(self.log_model.visible_indices):
+                    real_idx = self.log_model.visible_indices[row]
+                    raw_text = self.log_model.all_lines[real_idx].rstrip('\r\n')
+                    selected_text = raw_text.strip()
+        
+        add_include_act = None
+        add_exclude_act = None
+        if selected_text:
+            display_text = selected_text if len(selected_text) <= 30 else selected_text[:27] + "..."
+            add_include_act = menu.addAction(f"Add as Include Filter: \"{display_text}\"")
+            add_exclude_act = menu.addAction(f"Add as Exclude Filter: \"{display_text}\"")
+            
+        chosen_action = menu.exec_(self.log_view.viewport().mapToGlobal(position))
+        
+        if chosen_action:
+            if chosen_action == add_include_act:
+                self.add_quick_filter_from_text(selected_text, exclude=False)
+            elif chosen_action == add_exclude_act:
+                self.add_quick_filter_from_text(selected_text, exclude=True)
+
+    def add_quick_filter_from_text(self, text, exclude=False):
+        if not text:
+            return
+        filter_data = {
+            "text": text,
+            "case_sensitive": False,
+            "regex": False,
+            "exclude": exclude,
+            "bg_color": "None",
+            "text_color": "None",
+            "active": True,
+            "description": "Quick context filter"
+        }
+        self._insert_filter_item(self._current_tab_state(), filter_data)
+        self.apply_filters()
+        self.set_tab_modified(self.filter_tabs.currentIndex(), True)
 
     def toggle_adb_monitoring(self):
         style = self.style()

@@ -249,9 +249,15 @@ class FilterDialog(QDialog):
         bg_name = self.bg_color.currentText()
         fg_name = self.text_color.currentText()
         
-        # Assumptions for Dark Mode (Default)
-        bg_hex = COLOR_MAP.get(bg_name, "#1e1e1e") if bg_name != "None" else "#1e1e1e"
-        fg_hex = TEXT_COLOR_MAP.get(fg_name, "#e0e0e0") if fg_name != "None" else "#e0e0e0"
+        is_dark = True
+        if self.parent() and hasattr(self.parent(), "log_model"):
+            is_dark = self.parent().log_model.is_dark_theme
+            
+        default_bg = "#1e1e1e" if is_dark else "#ffffff"
+        default_fg = "#e0e0e0" if is_dark else "#000000"
+        
+        bg_hex = COLOR_MAP.get(bg_name, default_bg) if bg_name != "None" else default_bg
+        fg_hex = TEXT_COLOR_MAP.get(fg_name, default_fg) if fg_name != "None" else default_fg
         
         try:
             ratio = self.calculate_contrast(bg_hex, fg_hex)

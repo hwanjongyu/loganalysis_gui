@@ -631,6 +631,47 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.assertEqual(widget.desc_label.text(), " // Filter for pattern matching")
         self.assertFalse(widget.desc_label.isHidden())
 
+    def test_filter_dialog_theme_aware_contrast_check(self):
+        # Parent window set to Dark theme
+        self.window.set_theme(light=False)
+        dialog_dark = FilterDialog(self.window)
+        # Select low contrast colors on dark theme
+        dialog_dark.bg_color.setCurrentText("Gray")
+        dialog_dark.text_color.setCurrentText("White")
+        dialog_dark.check_contrast()
+        self.assertTrue(any(word in (dialog_dark.contrast_lbl.text().lower() + dialog_dark.contrast_lbl.toolTip().lower()) for word in ["contrast", "poor", "warning"]))
+
+        # Parent window set to Light theme
+        self.window.set_theme(light=True)
+        dialog_light = FilterDialog(self.window)
+        # Select low contrast colors on light theme
+        dialog_light.bg_color.setCurrentText("White")
+        dialog_light.text_color.setCurrentText("White")
+        dialog_light.check_contrast()
+        self.assertTrue(any(word in (dialog_light.contrast_lbl.text().lower() + dialog_light.contrast_lbl.toolTip().lower()) for word in ["contrast", "poor", "warning"]))
+
+    def test_log_view_custom_context_menu_include_filter(self):
+        self.window.log_model.set_lines(["first log line\n", "second log line\n"])
+        self.window.log_model.update_visible_indices([0, 1])
+
+        # Selection of the first row
+        index_obj = self.window.log_model.index(0, 0)
+        self.window.log_view.setCurrentIndex(index_obj)
+        self.window.log_view.selectionModel().select(
+            index_obj,
+            self.window.log_view.selectionModel().ClearAndSelect | self.window.log_view.selectionModel().Rows
+        )
+
+        # Trigger quick filter creation via helper directly
+        self.window.add_quick_filter_from_text("first log line", exclude=False)
+
+        # Assert that the filter is created correctly in the active tab state
+        tab_state = self.tab_state(0)
+        self.assertEqual(len(tab_state.filters), 1)
+        self.assertEqual(tab_state.filters[0]["text"], "first log line")
+        self.assertFalse(tab_state.filters[0]["exclude"])
+        self.assertEqual(tab_state.filters[0]["description"], "Quick context filter")
+
 
 if __name__ == "__main__":
     unittest.main()
