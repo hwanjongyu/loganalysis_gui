@@ -16,7 +16,9 @@ class LogModel(QAbstractListModel):
         super().__init__(parent)
         self.all_lines = [] 
         self.visible_indices = [] 
-        self.filters = []
+        self._filters = []
+        self.prepared_filters = []
+        self._style_cache = {}
         self.show_line_numbers = True
         self.show_only_filtered = True
         self.font = QFont("Monospace", 10) # Default size 10
@@ -29,10 +31,27 @@ class LogModel(QAbstractListModel):
         self.search_regex = False
         self.is_dark_theme = True
 
+    @property
+    def filters(self):
+        return self._filters
+
+    @filters.setter
+    def filters(self, value):
+        self._filters = value
+        self.prepared_filters = prepare_filters(value)
+        self.invalidate_filter_cache()
+
+    def invalidate_filter_cache(self):
+        self._style_cache.clear()
+
     def _display_text(self, line_text):
+        if isinstance(line_text, bytes):
+            line_text = line_text.decode("utf-8", errors="replace")
         return display_log_line_text(line_text)
 
     def _measured_text(self, line_text):
+        if isinstance(line_text, bytes):
+            line_text = line_text.decode("utf-8", errors="replace")
         return measured_log_line_text(line_text)
 
     def _update_visible_longest_line(self, measured_text):
@@ -81,6 +100,41 @@ class LogModel(QAbstractListModel):
             else:
                 return self.search_query.lower() in line.lower()
 
+    def _get_style(self, real_idx, line):
+        if real_idx not in self._style_cache:
+            matches = [matched.filter_data for matched in find_matching_filters(line, self.prepared_filters)]
+            bg_color = None
+            fg_color = None
+            
+            if not matches:
+                fg_color = QColor("#808080")
+            else:
+                bg_result = None
+                fg_result = None
+                exclude_wins = False
+                for ftr in reversed(matches):
+                    if ftr["exclude"]:
+                        exclude_wins = True
+                        break
+                    
+                    if bg_result is None and ftr["bg_color"] != "None":
+                        bg_result = ftr["bg_color"]
+                    if fg_result is None and ftr.get("text_color", "None") != "None":
+                        fg_result = ftr["text_color"]
+                    
+                    if bg_result and fg_result:
+                        break
+                
+                if not exclude_wins:
+                    if bg_result:
+                        bg_color = QColor(COLOR_MAP.get(bg_result, bg_result))
+                    if fg_result:
+                        fg_color = QColor(TEXT_COLOR_MAP.get(fg_result, fg_result))
+            
+            self._style_cache[real_idx] = (bg_color, fg_color, matches)
+            
+        return self._style_cache[real_idx]
+
     def data(self, index, role):
         if not index.isValid():
             return None
@@ -91,6 +145,9 @@ class LogModel(QAbstractListModel):
             
         real_idx = self.visible_indices[row]
         line_text = self.all_lines[real_idx]
+        if isinstance(line_text, bytes):
+            line_text = line_text.decode("utf-8", errors="replace")
+            self.all_lines[real_idx] = line_text
 
         if role == Qt.DisplayRole:
             clean_text = self._display_text(line_text)
@@ -104,13 +161,15 @@ class LogModel(QAbstractListModel):
         if role == Qt.BackgroundRole:
             if self.search_query and self._is_search_match(line_text):
                 return QColor("#3E2723") if self.is_dark_theme else QColor("#FFF9C4")
-            return self._get_color(line_text, role)
+            bg_color, _, _ = self._get_style(real_idx, line_text)
+            return bg_color
 
         if role == Qt.ForegroundRole:
-            return self._get_color(line_text, role)
+            _, fg_color, _ = self._get_style(real_idx, line_text)
+            return fg_color
 
         if role == Qt.ToolTipRole:
-            matches = self._get_matching_filters(line_text)
+            _, _, matches = self._get_style(real_idx, line_text)
             if matches:
                 tip = "<b>Matching Filters:</b><br/>"
                 for m in matches:
@@ -127,46 +186,9 @@ class LogModel(QAbstractListModel):
 
         return None
 
-    def _get_matching_filters(self, line):
-        prepared_filters = prepare_filters(self.filters)
-        return [matched.filter_data for matched in find_matching_filters(line, prepared_filters)]
-
-    def _get_color(self, line, role):
-        matches = self._get_matching_filters(line)
-        if not matches:
-            if role == Qt.ForegroundRole:
-                return QColor("#808080")
-            return None
-            
-        bg_result = None
-        fg_result = None
-        
-        # Priority: Last active non-exclude filter wins for colors.
-        # If any match is an exclude, it might have been hidden by the worker, 
-        # but here we just return default if the highest priority match is an exclude.
-        for ftr in reversed(matches):
-            if ftr["exclude"]:
-                return None # Exclude wins priority
-            
-            if bg_result is None and ftr["bg_color"] != "None":
-                bg_result = ftr["bg_color"]
-            if fg_result is None and ftr.get("text_color", "None") != "None":
-                fg_result = ftr["text_color"]
-            
-            if bg_result and fg_result:
-                break
-
-        if role == Qt.BackgroundRole and bg_result:
-            return QColor(COLOR_MAP.get(bg_result, bg_result))
-        if role == Qt.ForegroundRole:
-            if fg_result:
-                return QColor(TEXT_COLOR_MAP.get(fg_result, fg_result))
-            return None
-            
-        return None
-
     def set_lines(self, lines):
         self.beginResetModel()
+        self.invalidate_filter_cache()
         self.all_lines = lines
         self.visible_indices = list(range(len(lines)))
         self.max_line_length = 0
@@ -192,6 +214,7 @@ class LogModel(QAbstractListModel):
     
     def clear(self):
         self.beginResetModel()
+        self.invalidate_filter_cache()
         self.all_lines = []
         self.visible_indices = []
         self.max_line_length = 0
@@ -216,10 +239,14 @@ class LogModel(QAbstractListModel):
         new_indices = []
         widest_new_visible_text = ""
         widest_new_visible_length = 0
-        prepared_filters = prepare_filters(self.filters)
+        prepared_filters = self.prepared_filters
         
         for i, line in enumerate(lines):
             real_idx = start_real_idx + i
+            if isinstance(line, bytes):
+                line = line.decode("utf-8", errors="replace")
+                self.all_lines[real_idx] = line
+
             matching_filters, is_visible = evaluate_line(
                 line,
                 prepared_filters,

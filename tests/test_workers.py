@@ -25,7 +25,7 @@ class FileLoadWorkerTests(unittest.TestCase):
 
             self.assertGreaterEqual(len(progress_events), 2)
             self.assertEqual(progress_events[-1], (7, file_path, 17, 17, 3))
-            self.assertEqual(completions[0], (7, file_path, ["alpha\n", "beta\r\n", "gamma"]))
+            self.assertEqual(completions[0], (7, file_path, [b"alpha\n", b"beta\r\n", b"gamma"]))
         finally:
             os.unlink(file_path)
 
@@ -46,6 +46,31 @@ class FileLoadWorkerTests(unittest.TestCase):
         from loganalysis_gui.workers import AdbWorker
         worker = AdbWorker(device_serial="test-serial-1234")
         self.assertEqual(worker.device_serial, "test-serial-1234")
+
+
+    def test_filter_worker_handles_exception_safely(self):
+        from loganalysis_gui.workers import FilterWorker
+        # Pass None as self.lines to trigger a TypeError inside run()
+        worker = FilterWorker(None, [], True, 42)
+        
+        failures = []
+        worker.filtering_failed.connect(lambda *args: failures.append(args))
+        
+        worker.run()
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0][0], 42)
+        self.assertIn("NoneType", failures[0][1])
+
+    def test_adb_worker_validates_serial_characters(self):
+        from loganalysis_gui.workers import AdbWorker
+        worker = AdbWorker(device_serial="invalid; serial & injection")
+        
+        errors = []
+        worker.error_occurred.connect(lambda *args: errors.append(args))
+        
+        worker.run()
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Invalid characters in device serial", errors[0][0])
 
 
 if __name__ == "__main__":

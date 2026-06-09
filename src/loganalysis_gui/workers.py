@@ -46,7 +46,7 @@ class FileLoadWorker(QThread):
                             break
 
                         bytes_read += len(line_bytes)
-                        lines.append(line_bytes.decode("utf-8", errors="replace"))
+                        lines.append(line_bytes)
 
                         if bytes_read >= next_progress_bytes:
                             self.progress_updated.emit(
@@ -91,13 +91,15 @@ class AdbWorker(QThread):
         try:
             cmd = ['adb']
             if self.device_serial:
+                if not all(c.isalnum() or c in '.-_:' for c in self.device_serial):
+                    raise ValueError("Invalid characters in device serial.")
                 cmd.extend(['-s', self.device_serial])
             cmd.extend(['logcat', '-v', 'threadtime'])
 
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 universal_newlines=True, 
                 encoding='utf-8', 
                 errors='replace'
@@ -125,18 +127,27 @@ class AdbWorker(QThread):
         except Exception as e:
             self.error_occurred.emit(f"ADB Error: {str(e)}")
         finally:
-            self.terminate_process()
+            self.cleanup_process()
 
     def stop(self):
         self.is_running = False
-        self.terminate_process()
-    
-    def terminate_process(self):
+        if self.process:
+            try:
+                self.process.terminate()
+            except OSError:
+                pass
+
+    def cleanup_process(self):
         if not self.process:
             return
 
         process = self.process
         self.process = None
+
+        try:
+            process.stdout.close()
+        except Exception:
+            pass
 
         if process.poll() is not None:
             return
@@ -149,15 +160,14 @@ class AdbWorker(QThread):
                 process.kill()
                 process.wait(timeout=1)
             except (subprocess.TimeoutExpired, OSError) as error:
-                if self.is_running:
-                    self.error_occurred.emit(f"ADB Error: {error}")
+                self.error_occurred.emit(f"ADB cleanup error: {error}")
         except OSError as error:
-            if self.is_running:
-                self.error_occurred.emit(f"ADB Error: {error}")
+            self.error_occurred.emit(f"ADB cleanup error: {error}")
 
 
 class FilterWorker(QThread):
     finished_filtering = pyqtSignal(int, list, int, list, str)
+    filtering_failed = pyqtSignal(int, str)
     
     def __init__(self, lines, filters, show_only_filtered, request_id):
         super().__init__()
@@ -168,49 +178,54 @@ class FilterWorker(QThread):
         self.is_running = True
 
     def run(self):
-        visible_indices = []
-        match_count = 0
-        widest_visible_text = ""
-        widest_visible_length = 0
-        
-        # Initialize counts for ALL filters passed in
-        filter_counts = [0] * len(self.filters)
-        
-        prepared_filters = prepare_filters(self.filters)
+        try:
+            visible_indices = []
+            match_count = 0
+            widest_visible_text = ""
+            widest_visible_length = 0
+            
+            # Initialize counts for ALL filters passed in
+            filter_counts = [0] * len(self.filters)
+            
+            prepared_filters = prepare_filters(self.filters)
 
-        count = len(self.lines)
-        for i in range(count):
-            if not self.is_running:
-                return
+            count = len(self.lines)
+            for i in range(count):
+                if not self.is_running:
+                    return
 
-            line = self.lines[i]
+                line = self.lines[i]
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
 
-            matching_filters, is_visible = evaluate_line(
-                line,
-                prepared_filters,
-                self.show_only_filtered,
+                matching_filters, is_visible = evaluate_line(
+                    line,
+                    prepared_filters,
+                    self.show_only_filtered,
+                )
+                for matched_filter in matching_filters:
+                    filter_counts[matched_filter.original_index] += 1
+
+                if matching_filters and not matching_filters[-1].filter_data["exclude"]:
+                    match_count += 1
+
+                if is_visible:
+                    visible_indices.append(i)
+                    measured_text = measured_log_line_text(line)
+                    measured_length = len(measured_text)
+                    if measured_length > widest_visible_length:
+                        widest_visible_length = measured_length
+                        widest_visible_text = measured_text
+            
+            self.finished_filtering.emit(
+                self.request_id,
+                visible_indices,
+                match_count,
+                filter_counts,
+                widest_visible_text,
             )
-            for matched_filter in matching_filters:
-                filter_counts[matched_filter.original_index] += 1
-
-            if matching_filters and not matching_filters[-1].filter_data["exclude"]:
-                match_count += 1
-
-            if is_visible:
-                visible_indices.append(i)
-                measured_text = measured_log_line_text(line)
-                measured_length = len(measured_text)
-                if measured_length > widest_visible_length:
-                    widest_visible_length = measured_length
-                    widest_visible_text = measured_text
-        
-        self.finished_filtering.emit(
-            self.request_id,
-            visible_indices,
-            match_count,
-            filter_counts,
-            widest_visible_text,
-        )
+        except Exception as e:
+            self.filtering_failed.emit(self.request_id, str(e))
 
     def stop(self):
         self.is_running = False

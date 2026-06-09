@@ -158,7 +158,7 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.window.delete_filter_tab()
 
         active_worker.stop.assert_called_once()
-        active_worker.wait.assert_called_once()
+        active_worker.finished.connect.assert_called_once_with(active_worker.deleteLater)
         self.assertEqual(len(self.window.filter_tab_states), 1)
         self.assertEqual(self.tab_state(0).filters[0]["text"], "beta")
         self.assertEqual(self.tab_state(0).checkbox.property("tab_index"), 0)
@@ -256,7 +256,7 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.window.clear_logs()
 
         active_worker.stop.assert_called_once()
-        active_worker.wait.assert_called_once()
+        active_worker.finished.connect.assert_called_once_with(active_worker.deleteLater)
         self.assertIsNone(self.window.file_load_thread)
         self.assertFalse(self.window.runtime.is_loading_file)
         self.assertTrue(self.window.file_load_progress.isHidden())

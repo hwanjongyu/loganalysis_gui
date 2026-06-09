@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QColor, QFontMetrics
 from PyQt5.QtCore import Qt
 
-from .constants import COLOR_MAP, TEXT_COLOR_MAP, DARK_STYLESHEET, MAX_MONITOR_LINES
+from .constants import COLOR_MAP, TEXT_COLOR_MAP, DARK_STYLESHEET, LIGHT_STYLESHEET, MAX_MONITOR_LINES
 from .workers import AdbWorker, FileLoadWorker, FilterWorker
 from .models import LogModel
 from .dialogs import FindDialog, FilterDialog
@@ -291,6 +291,7 @@ class LogAnalysisMainWindow(QMainWindow):
         container.setLayout(layout)
         self.setCentralWidget(container)
         self.refresh_adb_devices()
+        self.set_theme(light=True)
 
     def _next_filter_request_id(self):
         self.runtime.filter_request_id += 1
@@ -328,8 +329,15 @@ class LogAnalysisMainWindow(QMainWindow):
         self.filter_thread = None
         if thread:
             thread.stop()
-            if thread.isRunning():
-                thread.wait()
+            try:
+                thread.finished_filtering.disconnect()
+            except TypeError:
+                pass
+            try:
+                thread.filtering_failed.disconnect()
+            except TypeError:
+                pass
+            thread.finished.connect(thread.deleteLater)
 
     def _finish_file_load_ui(self):
         self.runtime.is_loading_file = False
@@ -351,8 +359,19 @@ class LogAnalysisMainWindow(QMainWindow):
         self._finish_file_load_ui()
         if thread:
             thread.stop()
-            if thread.isRunning():
-                thread.wait()
+            try:
+                thread.progress_updated.disconnect()
+            except TypeError:
+                pass
+            try:
+                thread.finished_loading.disconnect()
+            except TypeError:
+                pass
+            try:
+                thread.load_failed.disconnect()
+            except TypeError:
+                pass
+            thread.finished.connect(thread.deleteLater)
 
     def _update_file_load_progress_ui(self, file_path, bytes_read, total_bytes, line_count):
         file_name = os.path.basename(file_path) or file_path
@@ -395,8 +414,15 @@ class LogAnalysisMainWindow(QMainWindow):
         self.adb_thread = None
         if thread:
             thread.stop()
-            if thread.isRunning():
-                thread.wait()
+            try:
+                thread.chunk_ready.disconnect()
+            except TypeError:
+                pass
+            try:
+                thread.error_occurred.disconnect()
+            except TypeError:
+                pass
+            thread.finished.connect(thread.deleteLater)
 
     def _effective_model_filters(self):
         effective_filters = []
@@ -458,6 +484,9 @@ class LogAnalysisMainWindow(QMainWindow):
     def _refresh_tab_checkboxes(self):
         tab_bar = self.filter_tabs.tabBar()
         for index, tab_state in enumerate(self.filter_tab_states):
+            old_checkbox = tab_bar.tabButton(index, QTabBar.LeftSide)
+            if old_checkbox:
+                old_checkbox.deleteLater()
             checkbox = QCheckBox()
             checkbox.setProperty("tab_index", index)
             checkbox.setChecked(tab_state.enabled)
@@ -721,7 +750,7 @@ class LogAnalysisMainWindow(QMainWindow):
         if light:
             self.light_theme_action.setChecked(True)
             self.dark_theme_action.setChecked(False)
-            QApplication.instance().setStyleSheet("")
+            QApplication.instance().setStyleSheet(LIGHT_STYLESHEET)
         else:
             self.light_theme_action.setChecked(False)
             self.dark_theme_action.setChecked(True)
@@ -1052,6 +1081,7 @@ class LogAnalysisMainWindow(QMainWindow):
     def add_filter_tab(self):
         filter_list = QListWidget()
         filter_list.setDragDropMode(QListWidget.InternalMove)
+        filter_list.setAlternatingRowColors(True)
         filter_list.itemDoubleClicked.connect(self.edit_filter_dialog)
         filter_list.setContextMenuPolicy(Qt.CustomContextMenu)
         filter_list.installEventFilter(self)
@@ -1120,14 +1150,22 @@ class LogAnalysisMainWindow(QMainWindow):
             for i in range(filter_list.count()):
                 item = filter_list.item(i)
                 self.apply_filter_colors_to_list_item(item, filters[i])
+                widget = filter_list.itemWidget(item)
+                if not widget:
+                    widget = FilterItemWidget(filters[i])
+                    widget.filter_toggled.connect(self._on_filter_toggled)
+                    filter_list.setItemWidget(item, widget)
         self.apply_filters()
         self.set_tab_modified(self.filter_tabs.currentIndex(), True)
 
     def delete_filter_tab(self):
         idx = self.filter_tabs.currentIndex()
         if len(self.filter_tab_states) > 1 and idx >= 0:
+            tab_state = self.filter_tab_states[idx]
             self.filter_tabs.removeTab(idx)
             del self.filter_tab_states[idx]
+            if tab_state.tab_widget:
+                tab_state.tab_widget.deleteLater()
             self._refresh_tab_checkboxes()
             self.apply_filters()
 
@@ -1170,6 +1208,25 @@ class LogAnalysisMainWindow(QMainWindow):
             self, "Open Log File", "", "Log/Text Files (*.log *.txt);;All Files (*)"
         )
         if file_path:
+            if not os.path.isfile(file_path):
+                QMessageBox.warning(self, "Invalid File", "The selected path is not a regular file.")
+                return
+
+            try:
+                size = os.path.getsize(file_path)
+                MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
+                if size > MAX_FILE_SIZE:
+                    QMessageBox.warning(
+                        self, 
+                        "File Too Large", 
+                        f"Opening files larger than 500 MB is blocked to prevent system memory exhaustion.\n"
+                        f"Selected file size: {size / (1024*1024):.1f} MB."
+                    )
+                    return
+            except OSError as e:
+                QMessageBox.warning(self, "File Error", f"Cannot access file details: {str(e)}")
+                return
+
             self._start_file_load(file_path)
 
     def on_file_load_progress(self, request_id, file_path, bytes_read, total_bytes, line_count):
@@ -1295,7 +1352,11 @@ class LogAnalysisMainWindow(QMainWindow):
             if tab_name.startswith("*"): tab_name = tab_name[1:]
             
             tab_state = self._tab_state(idx)
-            filters_to_save = tab_state.filters
+            filters_to_save = []
+            for f in tab_state.filters:
+                f_copy = f.copy()
+                f_copy.pop("total_matches", None)
+                filters_to_save.append(f_copy)
             data = {
                 "name": tab_name,
                 "enabled": tab_state.enabled,
@@ -1432,6 +1493,7 @@ class LogAnalysisMainWindow(QMainWindow):
             request_id
         )
         self.filter_thread.finished_filtering.connect(self.on_filtering_finished)
+        self.filter_thread.filtering_failed.connect(self.on_filtering_failed)
         self.filter_thread.start()
 
     def on_filtering_finished(
@@ -1493,6 +1555,17 @@ class LogAnalysisMainWindow(QMainWindow):
             self.log_view.scrollToBottom()
         self.runtime.scroll_to_bottom_after_refilter = False
             
+    def on_filtering_failed(self, request_id, error_message):
+        if request_id != self.runtime.filter_request_id:
+            return
+
+        if self.sender() is self.filter_thread:
+            self.filter_thread = None
+
+        self.runtime.is_refiltering = False
+        self.status_bar.showMessage(f"Filtering error: {error_message}", 5000)
+        self._flush_pending_chunks()
+
     def update_filter_counts_ui(self):
         current_tab_state = self._current_tab_state()
         if current_tab_state is not None:

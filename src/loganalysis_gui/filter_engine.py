@@ -1,13 +1,15 @@
 import re
+import functools
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Pattern, Sequence, Tuple
 
 _REGEX_CACHE: Dict[Tuple[str, bool], Pattern[str]] = {}
 
-
 def get_compiled_regex(pattern: str, case_sensitive: bool) -> Pattern[str]:
     key = (pattern, case_sensitive)
     if key not in _REGEX_CACHE:
+        if len(_REGEX_CACHE) >= 1024:
+            _REGEX_CACHE.clear()
         flags = 0 if case_sensitive else re.IGNORECASE
         _REGEX_CACHE[key] = re.compile(pattern, flags)
     return _REGEX_CACHE[key]
@@ -18,6 +20,7 @@ class PreparedFilter:
     filter_data: Dict[str, Any]
     original_index: int
     compiled_re: Optional[Pattern[str]] = None
+    lowered_text: str = ""
 
 
 def prepare_filters(filters: Sequence[Dict[str, Any]]) -> List[PreparedFilter]:
@@ -27,14 +30,18 @@ def prepare_filters(filters: Sequence[Dict[str, Any]]) -> List[PreparedFilter]:
             continue
 
         compiled_re = None
+        lowered_text = ""
         if filter_data["regex"]:
             compiled_re = get_compiled_regex(filter_data["text"], filter_data["case_sensitive"])
+        elif not filter_data["case_sensitive"]:
+            lowered_text = filter_data["text"].lower()
 
         prepared_filters.append(
             PreparedFilter(
                 filter_data=filter_data,
                 original_index=index,
                 compiled_re=compiled_re,
+                lowered_text=lowered_text,
             )
         )
     return prepared_filters
@@ -44,6 +51,7 @@ def filter_matches_line(
     line: str,
     filter_data: Dict[str, Any],
     compiled_re: Optional[Pattern[str]] = None,
+    lowered_text: str = "",
 ) -> bool:
     if filter_data["regex"]:
         regex = compiled_re
@@ -53,7 +61,7 @@ def filter_matches_line(
 
     if filter_data["case_sensitive"]:
         return filter_data["text"] in line
-    return filter_data["text"].lower() in line.lower()
+    return (lowered_text or filter_data["text"].lower()) in line.lower()
 
 
 def find_matching_filters(
@@ -66,6 +74,7 @@ def find_matching_filters(
             line,
             prepared_filter.filter_data,
             prepared_filter.compiled_re,
+            prepared_filter.lowered_text,
         ):
             matches.append(prepared_filter)
     return matches
