@@ -45,12 +45,16 @@ class SearchController:
         self.find_dialog.activateWindow()
 
     def stop_search(self):
-        if self.search_thread:
-            if hasattr(self.search_thread, "stop"):
-                self.search_thread.stop()
-            if hasattr(self.search_thread, "isRunning") and self.search_thread.isRunning():
-                self.search_thread.wait(500)
-            self.search_thread = None
+        thread = self.search_thread
+        self.search_thread = None
+        if thread is not None:
+            try:
+                if hasattr(thread, "stop"):
+                    thread.stop()
+                if hasattr(thread, "isRunning") and thread.isRunning():
+                    thread.wait(500)
+            except RuntimeError:
+                pass
 
     def find_in_files(
         self,

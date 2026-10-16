@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import subprocess
 from PyQt5.QtCore import QThread, pyqtSignal
 from .filter_engine import evaluate_line, prepare_filters
@@ -330,3 +331,51 @@ class SearchWorker(QThread):
             self.match_not_found.emit(self.request_id)
         except Exception as e:
             self.search_failed.emit(self.request_id, str(e))
+
+
+class AdbDeviceScanWorker(QThread):
+    devices_found = pyqtSignal(int, list)  # request_id, device_serials
+    scan_failed = pyqtSignal(int, str)     # request_id, error_reason ("timeout", "not_found", "error: ...")
+
+    def __init__(self, request_id: int = 0, timeout: float = 3.0):
+        super().__init__()
+        self.request_id = request_id
+        self.timeout = timeout
+        self.is_running = True
+
+    def stop(self):
+        self.is_running = False
+
+    def run(self):
+        try:
+            adb_bin = shutil.which("adb") or "adb"
+            if not self.is_running:
+                return
+
+            output = subprocess.check_output(
+                [adb_bin, "devices"],
+                universal_newlines=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.timeout,
+            )
+            if not self.is_running:
+                return
+
+            lines = output.strip().split("\n")
+            devices = []
+            for line in lines[1:]:
+                if not line.strip():
+                    continue
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] == "device":
+                    devices.append(parts[0])
+
+            self.devices_found.emit(self.request_id, devices)
+        except subprocess.TimeoutExpired:
+            self.scan_failed.emit(self.request_id, "timeout")
+        except FileNotFoundError:
+            self.scan_failed.emit(self.request_id, "not_found")
+        except Exception as e:
+            self.scan_failed.emit(self.request_id, f"error: {e}")
+

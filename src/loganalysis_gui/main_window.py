@@ -60,16 +60,15 @@ class LogAnalysisMainWindow(QMainWindow):
         self.file_load_progress.setFormat("%p%")
         self.status_bar.addPermanentWidget(self.file_load_progress)
         
-        self.create_menu()
-        self.init_ui()
-        
         self.filter_thread = None
         self.adb_thread = None
         self.file_load_thread = None
         self._active_workers = set()
         self.runtime = MainWindowRuntimeState()
-        
         self.find_dialog = None
+
+        self.create_menu()
+        self.init_ui()
 
     @property
     def filter_tab_states(self):
@@ -1164,10 +1163,13 @@ class LogAnalysisMainWindow(QMainWindow):
         self._stop_adb_worker()
         self.search_controller.stop_search()
         for worker in list(self._active_workers):
-            if hasattr(worker, "stop"):
-                worker.stop()
-            if hasattr(worker, "isRunning") and worker.isRunning():
-                worker.wait(1000)
+            try:
+                if hasattr(worker, "stop"):
+                    worker.stop()
+                if hasattr(worker, "isRunning") and worker.isRunning():
+                    worker.wait(1000)
+            except RuntimeError:
+                pass
         self._active_workers.clear()
 
     def closeEvent(self, event):

@@ -160,6 +160,39 @@ class FileLoadWorkerTests(unittest.TestCase):
         worker.run()
         self.assertEqual(matches, [])
 
+    def test_adb_device_scan_worker_parses_devices(self):
+        from unittest.mock import patch
+        from loganalysis_gui.workers import AdbDeviceScanWorker
+
+        mock_output = "List of devices attached\nemulator-5554\tdevice\nserial123\tdevice\nunauthorized-device\tunauthorized\n\n"
+        with patch("subprocess.check_output", return_value=mock_output):
+            worker = AdbDeviceScanWorker(request_id=10)
+            results = []
+            worker.devices_found.connect(lambda req, devs: results.append((req, devs)))
+            worker.run()
+
+            self.assertEqual(results, [(10, ["emulator-5554", "serial123"])])
+
+    def test_adb_device_scan_worker_handles_timeout_and_missing(self):
+        import subprocess
+        from unittest.mock import patch
+        from loganalysis_gui.workers import AdbDeviceScanWorker
+
+        with patch("subprocess.check_output", side_effect=subprocess.TimeoutExpired(cmd="adb", timeout=3.0)):
+            worker = AdbDeviceScanWorker(request_id=11)
+            errors = []
+            worker.scan_failed.connect(lambda req, reason: errors.append((req, reason)))
+            worker.run()
+            self.assertEqual(errors, [(11, "timeout")])
+
+        with patch("subprocess.check_output", side_effect=FileNotFoundError()):
+            worker = AdbDeviceScanWorker(request_id=12)
+            errors.clear()
+            worker.scan_failed.connect(lambda req, reason: errors.append((req, reason)))
+            worker.run()
+            self.assertEqual(errors, [(12, "not_found")])
+
 
 if __name__ == "__main__":
     unittest.main()
+
