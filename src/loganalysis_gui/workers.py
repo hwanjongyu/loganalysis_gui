@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 from PyQt5.QtCore import QThread, pyqtSignal
 from .filter_engine import evaluate_line, prepare_filters
@@ -236,3 +237,96 @@ class FilterWorker(QThread):
 
     def stop(self):
         self.is_running = False
+
+
+class SearchWorker(QThread):
+    match_found = pyqtSignal(int, int, int)       # request_id, visible_index, real_index
+    match_not_found = pyqtSignal(int)             # request_id
+    search_failed = pyqtSignal(int, str)          # request_id, error_message
+    progress_updated = pyqtSignal(int, int, int)  # request_id, checked_count, total_count
+
+    def __init__(
+        self,
+        lines: list,
+        visible_indices: list,
+        pattern: str,
+        forward: bool = True,
+        case: bool = False,
+        regex: bool = False,
+        start_row: int = -1,
+        request_id: int = 0,
+    ):
+        super().__init__()
+        self.lines = lines
+        self.visible_indices = visible_indices
+        self.pattern = pattern
+        self.forward = forward
+        self.case = case
+        self.regex = regex
+        self.start_row = start_row
+        self.request_id = request_id
+        self.is_running = True
+
+    def stop(self):
+        self.is_running = False
+
+    def run(self):
+        try:
+            total = len(self.visible_indices)
+            if total == 0:
+                self.match_not_found.emit(self.request_id)
+                return
+
+            if self.regex:
+                flags = 0 if self.case else re.IGNORECASE
+                compiled_regex = re.compile(self.pattern, flags)
+                search_term = None
+            else:
+                compiled_regex = None
+                search_term = self.pattern if self.case else self.pattern.lower()
+
+            visited_count = 0
+            if self.start_row < 0:
+                idx = -1 if self.forward else 0
+            else:
+                idx = self.start_row
+
+            while visited_count < total:
+                if not self.is_running:
+                    return
+
+                if self.forward:
+                    idx = (idx + 1) % total
+                else:
+                    idx = (idx - 1) % total
+
+                real_idx = self.visible_indices[idx]
+                raw_line = self.lines[real_idx]
+                if isinstance(raw_line, bytes):
+                    line_text = raw_line.decode("utf-8", errors="replace")
+                else:
+                    line_text = str(raw_line)
+
+                match = False
+                if compiled_regex:
+                    if compiled_regex.search(line_text):
+                        match = True
+                else:
+                    if self.case:
+                        if search_term in line_text:
+                            match = True
+                    else:
+                        if search_term in line_text.lower():
+                            match = True
+
+                if match:
+                    self.match_found.emit(self.request_id, idx, real_idx)
+                    return
+
+                visited_count += 1
+                if visited_count % 10000 == 0:
+                    self.progress_updated.emit(self.request_id, visited_count, total)
+
+            self.match_not_found.emit(self.request_id)
+        except Exception as e:
+            self.search_failed.emit(self.request_id, str(e))

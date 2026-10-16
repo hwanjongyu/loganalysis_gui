@@ -103,6 +103,63 @@ class FileLoadWorkerTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("Invalid characters in device serial", errors[0][0])
 
+    def test_search_worker_forward_and_backward(self):
+        from loganalysis_gui.workers import SearchWorker
+        lines = ["first apple\n", "banana\n", "second apple\n"]
+        indices = [0, 1, 2]
+
+        # Forward from index 0
+        matches = []
+        worker = SearchWorker(lines, indices, "apple", forward=True, start_row=0, request_id=1)
+        worker.match_found.connect(lambda req, idx, real: matches.append((req, idx, real)))
+        worker.run()
+        self.assertEqual(matches, [(1, 2, 2)])
+
+        # Backward from index 2
+        matches.clear()
+        worker = SearchWorker(lines, indices, "apple", forward=False, start_row=2, request_id=2)
+        worker.match_found.connect(lambda req, idx, real: matches.append((req, idx, real)))
+        worker.run()
+        self.assertEqual(matches, [(2, 0, 0)])
+
+    def test_search_worker_supports_regex_and_case_and_bytes(self):
+        from loganalysis_gui.workers import SearchWorker
+        lines = [b"DEBUG item\n", "INFO Item\n", b"ERROR ITEM\n"]
+        indices = [0, 1, 2]
+
+        # Case-sensitive regex
+        matches = []
+        worker = SearchWorker(lines, indices, r"ERROR\s+ITEM", forward=True, case=True, regex=True, request_id=3)
+        worker.match_found.connect(lambda req, idx, real: matches.append((req, idx, real)))
+        worker.run()
+        self.assertEqual(matches, [(3, 2, 2)])
+
+        # Case-insensitive plain text on byte line
+        matches.clear()
+        worker = SearchWorker(lines, indices, "debug", forward=True, case=False, regex=False, request_id=4)
+        worker.match_found.connect(lambda req, idx, real: matches.append((req, idx, real)))
+        worker.run()
+        self.assertEqual(matches, [(4, 0, 0)])
+
+    def test_search_worker_not_found_and_cancellation(self):
+        from loganalysis_gui.workers import SearchWorker
+        lines = ["line 1\n", "line 2\n"]
+        indices = [0, 1]
+
+        not_found = []
+        worker = SearchWorker(lines, indices, "nonexistent", forward=True, request_id=5)
+        worker.match_not_found.connect(lambda req: not_found.append(req))
+        worker.run()
+        self.assertEqual(not_found, [5])
+
+        # Test cancellation before run
+        worker = SearchWorker(lines, indices, "line", forward=True, request_id=6)
+        worker.stop()
+        matches = []
+        worker.match_found.connect(lambda req, idx, real: matches.append((req, idx, real)))
+        worker.run()
+        self.assertEqual(matches, [])
+
 
 if __name__ == "__main__":
     unittest.main()

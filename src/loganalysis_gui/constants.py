@@ -1,6 +1,7 @@
 # Shared Color Maps and Styles
 MAX_MONITOR_LINES = 200000
 MONITOR_TRIM_BATCH = 20000
+ASYNC_SEARCH_THRESHOLD = 5000
 
 COLOR_MAP = {
     "Khaki": "#F0E68C", "Yellow": "#FFFF00", "Gold": "#FFD700", "Cyan": "#00FFFF",

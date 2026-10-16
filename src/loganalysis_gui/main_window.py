@@ -796,6 +796,7 @@ class LogAnalysisMainWindow(QMainWindow):
     def clear_logs(self):
         self._cancel_file_load()
         self._stop_filter_worker()
+        self.search_controller.stop_search()
         self._invalidate_filter_results()
         self.runtime.pending_status_message = None
         self.runtime.loaded_file_path = None
@@ -1161,6 +1162,7 @@ class LogAnalysisMainWindow(QMainWindow):
         self._cancel_file_load()
         self._stop_filter_worker()
         self._stop_adb_worker()
+        self.search_controller.stop_search()
         for worker in list(self._active_workers):
             if hasattr(worker, "stop"):
                 worker.stop()
