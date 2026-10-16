@@ -105,8 +105,8 @@ graph TD
 | 단계 | 항목 | 주요 변경 파일 | 진행 상태 |
 | :---: | :--- | :--- | :---: |
 | **Step 1** | **D1: 비동기 SearchWorker** | `workers.py`, `search_controller.py`, `constants.py` | **완료 (테스트 통과)** |
-| **Step 2** | **D3: 비동기 ADB 디바이스 스캔** | `workers.py`, `adb_controller.py` | **완료 (테스트 75/75 Pass)** |
-| **Step 3** | **D2: 필터-스타일 파이프라인 통합** | `workers.py`, `models.py` | 대기 |
+| **Step 2** | **D3: 비동기 ADB 디바이스 스캔** | `workers.py`, `adb_controller.py` | **완료 (테스트 통과)** |
+| **Step 3** | **D2: 필터-스타일 파이프라인 통합** | `workers.py`, `models.py`, `filter_engine.py` | **완료 (테스트 77/77 Pass)** |
 | **Step 4** | **D4: LogViewController 분리** | `log_view_controller.py`, `main_window.py` | 대기 |
 
 ---

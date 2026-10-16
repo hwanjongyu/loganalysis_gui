@@ -3,7 +3,7 @@ import re
 import shutil
 import subprocess
 from PyQt5.QtCore import QThread, pyqtSignal
-from .filter_engine import evaluate_line, prepare_filters
+from .filter_engine import evaluate_line, prepare_filters, resolve_line_style
 from .models import measured_log_line_text
 
 
@@ -175,7 +175,7 @@ class AdbWorker(QThread):
 
 
 class FilterWorker(QThread):
-    finished_filtering = pyqtSignal(int, list, int, list, str)
+    finished_filtering = pyqtSignal(int, list, int, list, str, list)
     filtering_failed = pyqtSignal(int, str)
     
     def __init__(self, lines, filters, show_only_filtered, request_id):
@@ -189,6 +189,7 @@ class FilterWorker(QThread):
     def run(self):
         try:
             visible_indices = []
+            visible_styles = []
             match_count = 0
             widest_visible_text = ""
             widest_visible_length = 0
@@ -220,6 +221,7 @@ class FilterWorker(QThread):
 
                 if is_visible:
                     visible_indices.append(i)
+                    visible_styles.append(resolve_line_style(matching_filters))
                     measured_text = measured_log_line_text(line)
                     measured_length = len(measured_text)
                     if measured_length > widest_visible_length:
@@ -232,6 +234,7 @@ class FilterWorker(QThread):
                 match_count,
                 filter_counts,
                 widest_visible_text,
+                visible_styles,
             )
         except Exception as e:
             self.filtering_failed.emit(self.request_id, str(e))

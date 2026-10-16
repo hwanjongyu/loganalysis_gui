@@ -1044,7 +1044,7 @@ class LogAnalysisMainWindow(QMainWindow):
         
         if not self.log_model.all_lines:
             self._reset_filter_counts()
-            self.on_filtering_finished(request_id, [], 0, [0] * len(all_filters_to_count), "")
+            self.on_filtering_finished(request_id, [], 0, [0] * len(all_filters_to_count), "", [])
             return
 
         self.runtime.target_source_idx = -1
@@ -1076,6 +1076,7 @@ class LogAnalysisMainWindow(QMainWindow):
         match_count,
         filter_counts=None,
         widest_visible_text="",
+        visible_styles=None,
     ):
         if request_id != self.runtime.filter_request_id:
             return
@@ -1084,7 +1085,7 @@ class LogAnalysisMainWindow(QMainWindow):
             self.filter_thread = None
 
         self.runtime.is_refiltering = False
-        self.log_model.update_visible_indices(visible_indices, widest_visible_text)
+        self.log_model.update_visible_indices(visible_indices, widest_visible_text, visible_styles)
         self._update_log_column_width()
         
         if self.runtime.target_source_idx != -1 and visible_indices:

@@ -2,7 +2,7 @@ from collections import OrderedDict
 from PyQt5.QtCore import Qt, QAbstractListModel, QModelIndex
 from PyQt5.QtGui import QColor, QFont
 from .constants import COLOR_MAP, TEXT_COLOR_MAP
-from .filter_engine import evaluate_line, find_matching_filters, prepare_filters
+from .filter_engine import evaluate_line, find_matching_filters, prepare_filters, resolve_line_style
 
 MAX_STYLE_CACHE_SIZE = 10000
 
@@ -19,6 +19,8 @@ class LogModel(QAbstractListModel):
         super().__init__(parent)
         self.all_lines = [] 
         self.visible_indices = [] 
+        self.visible_styles = None
+        self._qcolor_cache = {}
         self._filters = []
         self.prepared_filters = []
         self._style_cache = OrderedDict()
@@ -34,6 +36,16 @@ class LogModel(QAbstractListModel):
         self.search_regex = False
         self.is_dark_theme = True
 
+    def _resolve_qcolor(self, color_spec):
+        if not color_spec or color_spec == "None":
+            return None
+        hex_val = COLOR_MAP.get(color_spec, TEXT_COLOR_MAP.get(color_spec, color_spec))
+        if hex_val not in self._qcolor_cache:
+            if len(self._qcolor_cache) >= 512:
+                self._qcolor_cache.clear()
+            self._qcolor_cache[hex_val] = QColor(hex_val)
+        return self._qcolor_cache[hex_val]
+
     @property
     def filters(self):
         return self._filters
@@ -46,6 +58,8 @@ class LogModel(QAbstractListModel):
 
     def invalidate_filter_cache(self):
         self._style_cache.clear()
+        self._qcolor_cache.clear()
+        self.visible_styles = None
 
     def _display_text(self, line_text):
         if isinstance(line_text, bytes):
@@ -177,10 +191,16 @@ class LogModel(QAbstractListModel):
         if role == Qt.BackgroundRole:
             if self.search_query and self._is_search_match(line_text):
                 return QColor("#3E2723") if self.is_dark_theme else QColor("#FFF9C4")
+            if self.visible_styles is not None and 0 <= row < len(self.visible_styles):
+                bg_val = self.visible_styles[row][0]
+                return self._resolve_qcolor(bg_val)
             bg_color, _, _ = self._get_style(real_idx, line_text)
             return bg_color
 
         if role == Qt.ForegroundRole:
+            if self.visible_styles is not None and 0 <= row < len(self.visible_styles):
+                fg_val = self.visible_styles[row][1]
+                return self._resolve_qcolor(fg_val)
             _, fg_color, _ = self._get_style(real_idx, line_text)
             return fg_color
 
@@ -220,7 +240,7 @@ class LogModel(QAbstractListModel):
         self.visible_longest_line_text = self.longest_line_text
         self.endResetModel()
  
-    def update_visible_indices(self, indices, widest_visible_text=None):
+    def update_visible_indices(self, indices, widest_visible_text=None, visible_styles=None):
         if widest_visible_text is None:
             widest_visible_text = self._find_longest_visible_text(indices)
         else:
@@ -228,6 +248,7 @@ class LogModel(QAbstractListModel):
 
         self.beginResetModel()
         self.visible_indices = indices
+        self.visible_styles = visible_styles
         self.visible_max_line_length = len(widest_visible_text)
         self.visible_longest_line_text = widest_visible_text
         self.endResetModel()
@@ -257,6 +278,7 @@ class LogModel(QAbstractListModel):
         
         # Calculate visibility
         new_indices = []
+        new_styles = []
         widest_new_visible_text = ""
         widest_new_visible_length = 0
         prepared_filters = self.prepared_filters
@@ -278,6 +300,8 @@ class LogModel(QAbstractListModel):
 
             if is_visible:
                 new_indices.append(real_idx)
+                if self.visible_styles is not None:
+                    new_styles.append(resolve_line_style(matching_filters))
                 measured_text = self._measured_text(line)
                 measured_length = len(measured_text)
                 if measured_length > widest_new_visible_length:
@@ -288,6 +312,8 @@ class LogModel(QAbstractListModel):
             first_row_idx = len(self.visible_indices)
             self.beginInsertRows(QModelIndex(), first_row_idx, first_row_idx + len(new_indices) - 1)
             self.visible_indices.extend(new_indices)
+            if self.visible_styles is not None:
+                self.visible_styles.extend(new_styles)
             self.endInsertRows()
             if widest_new_visible_length:
                 self._update_visible_longest_line(widest_new_visible_text)

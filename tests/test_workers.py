@@ -192,7 +192,48 @@ class FileLoadWorkerTests(unittest.TestCase):
             worker.run()
             self.assertEqual(errors, [(12, "not_found")])
 
+    def test_filter_worker_precomputes_visible_styles(self):
+        from loganalysis_gui.workers import FilterWorker
+        lines = ["error line\n", "normal line\n", "warning line\n"]
+        filters = [
+            {"text": "error", "regex": False, "case_sensitive": False, "bg_color": "Red", "text_color": "White", "exclude": False, "active": True},
+            {"text": "warning", "regex": False, "case_sensitive": False, "bg_color": "Yellow", "text_color": "Black", "exclude": False, "active": True},
+        ]
+        worker = FilterWorker(lines, filters, show_only_filtered=False, request_id=20)
+        results = []
+        worker.finished_filtering.connect(lambda *args: results.append(args))
+        worker.run()
+
+        self.assertEqual(len(results), 1)
+        req_id, indices, match_count, f_counts, widest_text, styles = results[0]
+        self.assertEqual(req_id, 20)
+        self.assertEqual(indices, [0, 1, 2])
+        self.assertEqual(len(styles), 3)
+        # Red bg, White text for row 0
+        self.assertEqual(styles[0], ("#FFB6B6", "#FFFFFF"))
+        # No filter matched for row 1 -> default grey text
+        self.assertEqual(styles[1], (None, "#808080"))
+        # Yellow bg, Black text for row 2
+        self.assertEqual(styles[2], ("#FFFF00", "#000000"))
+
+    def test_log_model_uses_precomputed_styles_without_dynamic_evaluation(self):
+        from loganalysis_gui.models import LogModel
+        from PyQt5.QtCore import Qt
+
+        model = LogModel()
+        model.set_lines(["line 0\n", "line 1\n"])
+        # Set precomputed styles directly
+        model.update_visible_indices([0, 1], widest_visible_text="line 0", visible_styles=[("#FFFF00", "#000000"), (None, "#808080")])
+
+        # Style cache should remain empty because precomputed styles are used
+        bg_0 = model.data(model.index(0, 0), Qt.BackgroundRole)
+        fg_0 = model.data(model.index(0, 0), Qt.ForegroundRole)
+        self.assertEqual(bg_0.name().upper(), "#FFFF00")
+        self.assertEqual(fg_0.name().upper(), "#000000")
+        self.assertEqual(len(model._style_cache), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

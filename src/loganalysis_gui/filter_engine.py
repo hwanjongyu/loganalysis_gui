@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional, Pattern, Sequence, Tuple
 
 import threading
 
+from .constants import COLOR_MAP, TEXT_COLOR_MAP
+
 _REGEX_CACHE_LOCK = threading.Lock()
 _REGEX_CACHE: Dict[Tuple[str, bool], Pattern[str]] = {}
 
@@ -106,3 +108,37 @@ def evaluate_line(
         return [], not show_only_filtered
 
     return matches, not matches[-1].filter_data["exclude"]
+
+
+def resolve_line_style(
+    matching_filters: Sequence[Any],
+    color_map: Optional[Dict[str, str]] = None,
+    text_color_map: Optional[Dict[str, str]] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolves (bg_color, fg_color) color names or hex strings from matching filters.
+
+    Returns (None, '#808080') when matching_filters is empty.
+    Returns (bg, fg) based on last-matching non-exclude filter rules.
+    """
+    if not matching_filters:
+        return None, "#808080"
+
+    bg_result = None
+    fg_result = None
+    for matched in reversed(matching_filters):
+        ftr = matched.filter_data if hasattr(matched, "filter_data") else matched
+        if ftr.get("exclude"):
+            return None, None
+        if bg_result is None and ftr.get("bg_color") != "None":
+            bg_result = ftr.get("bg_color")
+        if fg_result is None and ftr.get("text_color", "None") != "None":
+            fg_result = ftr.get("text_color")
+        if bg_result is not None and fg_result is not None:
+            break
+
+    cmap = color_map if color_map is not None else COLOR_MAP
+    tcmap = text_color_map if text_color_map is not None else TEXT_COLOR_MAP
+    bg_color = cmap.get(bg_result, bg_result) if bg_result else None
+    fg_color = tcmap.get(fg_result, fg_result) if fg_result else None
+    return bg_color, fg_color
+
