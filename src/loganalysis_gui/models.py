@@ -1,7 +1,10 @@
+from collections import OrderedDict
 from PyQt5.QtCore import Qt, QAbstractListModel, QModelIndex
 from PyQt5.QtGui import QColor, QFont
 from .constants import COLOR_MAP, TEXT_COLOR_MAP
 from .filter_engine import evaluate_line, find_matching_filters, prepare_filters
+
+MAX_STYLE_CACHE_SIZE = 10000
 
 
 def display_log_line_text(line_text):
@@ -18,7 +21,7 @@ class LogModel(QAbstractListModel):
         self.visible_indices = [] 
         self._filters = []
         self.prepared_filters = []
-        self._style_cache = {}
+        self._style_cache = OrderedDict()
         self.show_line_numbers = True
         self.show_only_filtered = True
         self.font = QFont("Monospace", 10) # Default size 10
@@ -59,8 +62,18 @@ class LogModel(QAbstractListModel):
             self.visible_max_line_length = len(measured_text)
             self.visible_longest_line_text = measured_text
 
+    def get_line_text(self, real_idx):
+        if 0 <= real_idx < len(self.all_lines):
+            line = self.all_lines[real_idx]
+            if isinstance(line, bytes):
+                return line.decode("utf-8", errors="replace")
+            return line
+        return ""
+
     def _update_longest_line(self, lines):
         for line in lines:
+            if isinstance(line, (bytes, str)) and len(line) <= self.max_line_length:
+                continue
             measured_text = self._measured_text(line)
             measured_length = len(measured_text)
             if measured_length > self.max_line_length:
@@ -101,38 +114,42 @@ class LogModel(QAbstractListModel):
                 return self.search_query.lower() in line.lower()
 
     def _get_style(self, real_idx, line):
-        if real_idx not in self._style_cache:
-            matches = [matched.filter_data for matched in find_matching_filters(line, self.prepared_filters)]
-            bg_color = None
-            fg_color = None
-            
-            if not matches:
-                fg_color = QColor("#808080")
-            else:
-                bg_result = None
-                fg_result = None
-                exclude_wins = False
-                for ftr in reversed(matches):
-                    if ftr["exclude"]:
-                        exclude_wins = True
-                        break
-                    
-                    if bg_result is None and ftr["bg_color"] != "None":
-                        bg_result = ftr["bg_color"]
-                    if fg_result is None and ftr.get("text_color", "None") != "None":
-                        fg_result = ftr["text_color"]
-                    
-                    if bg_result and fg_result:
-                        break
+        if real_idx in self._style_cache:
+            self._style_cache.move_to_end(real_idx)
+            return self._style_cache[real_idx]
+
+        matches = [matched.filter_data for matched in find_matching_filters(line, self.prepared_filters)]
+        bg_color = None
+        fg_color = None
+        
+        if not matches:
+            fg_color = QColor("#808080")
+        else:
+            bg_result = None
+            fg_result = None
+            exclude_wins = False
+            for ftr in reversed(matches):
+                if ftr["exclude"]:
+                    exclude_wins = True
+                    break
                 
-                if not exclude_wins:
-                    if bg_result:
-                        bg_color = QColor(COLOR_MAP.get(bg_result, bg_result))
-                    if fg_result:
-                        fg_color = QColor(TEXT_COLOR_MAP.get(fg_result, fg_result))
+                if bg_result is None and ftr["bg_color"] != "None":
+                    bg_result = ftr["bg_color"]
+                if fg_result is None and ftr.get("text_color", "None") != "None":
+                    fg_result = ftr["text_color"]
+                
+                if bg_result and fg_result:
+                    break
             
-            self._style_cache[real_idx] = (bg_color, fg_color, matches)
-            
+            if not exclude_wins:
+                if bg_result:
+                    bg_color = QColor(COLOR_MAP.get(bg_result, bg_result))
+                if fg_result:
+                    fg_color = QColor(TEXT_COLOR_MAP.get(fg_result, fg_result))
+        
+        if len(self._style_cache) >= MAX_STYLE_CACHE_SIZE:
+            self._style_cache.popitem(last=False)
+        self._style_cache[real_idx] = (bg_color, fg_color, matches)
         return self._style_cache[real_idx]
 
     def data(self, index, role):
@@ -147,7 +164,6 @@ class LogModel(QAbstractListModel):
         line_text = self.all_lines[real_idx]
         if isinstance(line_text, bytes):
             line_text = line_text.decode("utf-8", errors="replace")
-            self.all_lines[real_idx] = line_text
 
         if role == Qt.DisplayRole:
             clean_text = self._display_text(line_text)

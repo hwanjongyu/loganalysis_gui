@@ -91,7 +91,7 @@ class AdbWorker(QThread):
         try:
             cmd = ['adb']
             if self.device_serial:
-                if not all(c.isalnum() or c in '.-_:' for c in self.device_serial):
+                if self.device_serial.startswith('-') or not all(c.isalnum() or c in '.-_:' for c in self.device_serial):
                     raise ValueError("Invalid characters in device serial.")
                 cmd.extend(['-s', self.device_serial])
             cmd.extend(['logcat', '-v', 'threadtime'])
@@ -131,18 +131,18 @@ class AdbWorker(QThread):
 
     def stop(self):
         self.is_running = False
-        if self.process:
+        proc = self.process
+        if proc:
             try:
-                self.process.terminate()
-            except OSError:
+                proc.terminate()
+            except (OSError, ProcessLookupError):
                 pass
 
     def cleanup_process(self):
-        if not self.process:
-            return
-
         process = self.process
         self.process = None
+        if not process:
+            return
 
         try:
             process.stdout.close()

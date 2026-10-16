@@ -2,6 +2,7 @@ import re
 import json
 import bisect
 import os
+import shutil
 import subprocess
 from PyQt5.QtWidgets import (
     QMainWindow, QAction, QFileDialog, QStatusBar,
@@ -331,12 +332,14 @@ class LogAnalysisMainWindow(QMainWindow):
             thread.stop()
             try:
                 thread.finished_filtering.disconnect()
-            except TypeError:
+            except (TypeError, AttributeError):
                 pass
             try:
                 thread.filtering_failed.disconnect()
-            except TypeError:
+            except (TypeError, AttributeError):
                 pass
+            if hasattr(thread, "isRunning") and thread.isRunning():
+                thread.wait(1000)
             thread.finished.connect(thread.deleteLater)
 
     def _finish_file_load_ui(self):
@@ -361,16 +364,18 @@ class LogAnalysisMainWindow(QMainWindow):
             thread.stop()
             try:
                 thread.progress_updated.disconnect()
-            except TypeError:
+            except (TypeError, AttributeError):
                 pass
             try:
                 thread.finished_loading.disconnect()
-            except TypeError:
+            except (TypeError, AttributeError):
                 pass
             try:
                 thread.load_failed.disconnect()
-            except TypeError:
+            except (TypeError, AttributeError):
                 pass
+            if hasattr(thread, "isRunning") and thread.isRunning():
+                thread.wait(1000)
             thread.finished.connect(thread.deleteLater)
 
     def _update_file_load_progress_ui(self, file_path, bytes_read, total_bytes, line_count):
@@ -416,12 +421,14 @@ class LogAnalysisMainWindow(QMainWindow):
             thread.stop()
             try:
                 thread.chunk_ready.disconnect()
-            except TypeError:
+            except (TypeError, AttributeError):
                 pass
             try:
                 thread.error_occurred.disconnect()
-            except TypeError:
+            except (TypeError, AttributeError):
                 pass
+            if hasattr(thread, "isRunning") and thread.isRunning():
+                thread.wait(1000)
             thread.finished.connect(thread.deleteLater)
 
     def _effective_model_filters(self):
@@ -680,8 +687,11 @@ class LogAnalysisMainWindow(QMainWindow):
 
         chunks = self.runtime.pending_chunks
         self.runtime.pending_chunks = []
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
             self._apply_chunk_to_model(chunk)
+            if self.runtime.is_refiltering:
+                self.runtime.pending_chunks = chunks[i + 1:] + self.runtime.pending_chunks
+                break
 
     def _base_log_column_width(self):
         viewport_width = self.log_view.viewport().width()
@@ -842,7 +852,7 @@ class LogAnalysisMainWindow(QMainWindow):
                 idx = (idx - 1) % total
             
             real_idx = model.visible_indices[idx]
-            line = model.all_lines[real_idx]
+            line = model.get_line_text(real_idx)
             
             match = False
             if regex:
@@ -902,7 +912,7 @@ class LogAnalysisMainWindow(QMainWindow):
                 row = idx.row()
                 if row < len(self.log_model.visible_indices):
                     real_idx = self.log_model.visible_indices[row]
-                    raw_text = self.log_model.all_lines[real_idx].rstrip('\r\n')
+                    raw_text = self.log_model.get_line_text(real_idx).rstrip('\r\n')
                     selected_text = raw_text.strip()
         
         add_include_act = None
@@ -983,7 +993,14 @@ class LogAnalysisMainWindow(QMainWindow):
     def refresh_adb_devices(self):
         self.device_selector.clear()
         try:
-            output = subprocess.check_output(['adb', 'devices'], universal_newlines=True, encoding='utf-8', errors='replace')
+            adb_bin = shutil.which('adb') or 'adb'
+            output = subprocess.check_output(
+                [adb_bin, 'devices'],
+                universal_newlines=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=3.0,
+            )
             lines = output.strip().split('\n')
             devices = []
             for line in lines[1:]:
@@ -1001,6 +1018,10 @@ class LogAnalysisMainWindow(QMainWindow):
                 self.device_selector.addItem("No Devices Found")
                 self.device_selector.setEnabled(False)
                 self.status_bar.showMessage("No ADB devices connected.", 3000)
+        except subprocess.TimeoutExpired:
+            self.device_selector.addItem("ADB Timeout")
+            self.device_selector.setEnabled(False)
+            self.status_bar.showMessage("ADB device scan timed out.", 3000)
         except FileNotFoundError:
             self.device_selector.addItem("ADB Not Found")
             self.device_selector.setEnabled(False)
@@ -1487,7 +1508,7 @@ class LogAnalysisMainWindow(QMainWindow):
             self.status_bar.showMessage("Refiltering...")
             
         self.filter_thread = FilterWorker(
-            self.log_model.all_lines, 
+            self.log_model.all_lines[:], 
             all_filters_to_count, 
             self.log_model.show_only_filtered,
             request_id

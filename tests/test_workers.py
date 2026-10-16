@@ -72,6 +72,17 @@ class FileLoadWorkerTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("Invalid characters in device serial", errors[0][0])
 
+    def test_adb_worker_rejects_leading_hyphen_in_serial(self):
+        from loganalysis_gui.workers import AdbWorker
+        worker = AdbWorker(device_serial="-s_some_flag")
+        
+        errors = []
+        worker.error_occurred.connect(lambda *args: errors.append(args))
+        
+        worker.run()
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Invalid characters in device serial", errors[0][0])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -677,6 +677,32 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.assertIsNotNone(self.window.btn_refresh_devices)
         self.assertEqual(self.window.device_selector.toolTip(), "Target ADB Device Serial")
 
+    def test_find_in_files_handles_byte_lines(self):
+        self.window.find_dialog = DummyFindDialog()
+        self.window.log_model.set_lines([b"alpha line\n", b"beta target line\n", b"gamma line\n"])
+        self.window.log_model.update_visible_indices([0, 1, 2])
+
+        self.window.find_in_files("target", forward=True)
+        self.assertEqual(self.window.find_dialog.status, "")
+        self.assertEqual(self.window.log_view.currentIndex().row(), 1)
+
+    def test_log_model_style_cache_bounded_capacity(self):
+        from loganalysis_gui.models import MAX_STYLE_CACHE_SIZE
+        model = self.window.log_model
+        model.set_lines([f"line {i}\n" for i in range(MAX_STYLE_CACHE_SIZE + 50)])
+        model.update_visible_indices(list(range(MAX_STYLE_CACHE_SIZE + 50)))
+
+        for i in range(MAX_STYLE_CACHE_SIZE + 50):
+            model._get_style(i, f"line {i}\n")
+
+        self.assertLessEqual(len(model._style_cache), MAX_STYLE_CACHE_SIZE)
+
+    def test_get_line_text_safely_decodes_bytes(self):
+        self.window.log_model.set_lines([b"binary \xe2\x9c\x93 line\n", "plain text"])
+        self.assertEqual(self.window.log_model.get_line_text(0), "binary ✓ line\n")
+        self.assertEqual(self.window.log_model.get_line_text(1), "plain text")
+        self.assertEqual(self.window.log_model.get_line_text(99), "")
+
 
 if __name__ == "__main__":
     unittest.main()

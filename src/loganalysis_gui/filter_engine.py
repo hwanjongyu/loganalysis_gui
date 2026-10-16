@@ -3,16 +3,20 @@ import functools
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Pattern, Sequence, Tuple
 
+import threading
+
+_REGEX_CACHE_LOCK = threading.Lock()
 _REGEX_CACHE: Dict[Tuple[str, bool], Pattern[str]] = {}
 
 def get_compiled_regex(pattern: str, case_sensitive: bool) -> Pattern[str]:
     key = (pattern, case_sensitive)
-    if key not in _REGEX_CACHE:
-        if len(_REGEX_CACHE) >= 1024:
-            _REGEX_CACHE.clear()
-        flags = 0 if case_sensitive else re.IGNORECASE
-        _REGEX_CACHE[key] = re.compile(pattern, flags)
-    return _REGEX_CACHE[key]
+    with _REGEX_CACHE_LOCK:
+        if key not in _REGEX_CACHE:
+            if len(_REGEX_CACHE) >= 1024:
+                _REGEX_CACHE.clear()
+            flags = 0 if case_sensitive else re.IGNORECASE
+            _REGEX_CACHE[key] = re.compile(pattern, flags)
+        return _REGEX_CACHE[key]
 
 
 @dataclass(frozen=True)
