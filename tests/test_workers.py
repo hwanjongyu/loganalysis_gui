@@ -25,7 +25,27 @@ class FileLoadWorkerTests(unittest.TestCase):
 
             self.assertGreaterEqual(len(progress_events), 2)
             self.assertEqual(progress_events[-1], (7, file_path, 17, 17, 3))
-            self.assertEqual(completions[0], (7, file_path, [b"alpha\n", b"beta\r\n", b"gamma"]))
+            self.assertEqual(completions[0], (7, file_path, [b"alpha\n", b"beta\r\n", b"gamma"], "alpha"))
+        finally:
+            os.unlink(file_path)
+
+    def test_file_load_worker_computes_longest_line(self):
+        with tempfile.NamedTemporaryFile("wb", delete=False) as handle:
+            handle.write(b"short\nvery long line with trailing padding    \r\nmedium line\n")
+            file_path = handle.name
+
+        try:
+            completions = []
+            worker = FileLoadWorker(file_path, 9)
+            worker.finished_loading.connect(lambda *args: completions.append(args))
+            worker.run()
+
+            self.assertEqual(len(completions), 1)
+            req_id, path, lines, longest_line = completions[0]
+            self.assertEqual(req_id, 9)
+            self.assertEqual(len(lines), 3)
+            # measured_log_line_text strips trailing whitespace and crlf
+            self.assertEqual(longest_line, "very long line with trailing padding")
         finally:
             os.unlink(file_path)
 

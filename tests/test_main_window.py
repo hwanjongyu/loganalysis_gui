@@ -752,6 +752,61 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         worker.stop.assert_called_once()
         self.assertEqual(len(self.window._active_workers), 0)
 
+    def test_monitoring_hysteresis_batch_trimming(self):
+        self.window.runtime.is_monitoring = True
+        self.window.monitor_trim_batch = 5
+
+        with patch("loganalysis_gui.main_window.MAX_MONITOR_LINES", 10), patch.object(
+            self.window, "apply_filters"
+        ) as apply_filters:
+            # 1) Add 10 lines: no trimming triggered
+            self.window.on_adb_chunk([f"line_{i}\n" for i in range(10)])
+            apply_filters.assert_not_called()
+            self.assertEqual(len(self.window.log_model.all_lines), 10)
+
+            # 2) Add 4 lines (total 14, excess = 4 < 5): no trimming triggered
+            self.window.on_adb_chunk([f"extra_{i}\n" for i in range(4)])
+            apply_filters.assert_not_called()
+            self.assertEqual(len(self.window.log_model.all_lines), 14)
+
+            # 3) Add 2 lines (total 16, excess = 6 >= 5): batch trim triggered!
+            self.window.on_adb_chunk(["trigger_1\n", "trigger_2\n"])
+            apply_filters.assert_called_once()
+            # Trimmed down to MAX_MONITOR_LINES (10)
+            self.assertEqual(len(self.window.log_model.all_lines), 10)
+            self.assertEqual(self.window.log_model.all_lines[-2:], ["trigger_1\n", "trigger_2\n"])
+
+    def test_file_load_completion_with_offloaded_longest_line(self):
+        self.window.runtime.file_load_request_id = 1
+        self.window.runtime.is_loading_file = True
+
+        self.window.on_file_loaded(
+            1,
+            "/tmp/sample.log",
+            ["short\n", "a very long measured log line\n"],
+            longest_line_text="a very long measured log line",
+        )
+        self.wait_for_filtering()
+
+        self.assertEqual(
+            self.window.log_model.longest_line_text,
+            "a very long measured log line",
+        )
+        self.assertEqual(
+            self.window.log_model.max_line_length,
+            len("a very long measured log line"),
+        )
+
+    def test_log_model_set_lines_skips_rescan_when_longest_line_provided(self):
+        with patch.object(self.window.log_model, "_update_longest_line") as mock_update:
+            self.window.log_model.set_lines(
+                ["a\n", "bb\n", "ccc\n"],
+                longest_line_text="ccc",
+            )
+            mock_update.assert_not_called()
+            self.assertEqual(self.window.log_model.longest_line_text, "ccc")
+            self.assertEqual(self.window.log_model.max_line_length, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

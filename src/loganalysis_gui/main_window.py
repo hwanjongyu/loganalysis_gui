@@ -15,7 +15,14 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QColor, QFontMetrics
 from PyQt5.QtCore import Qt
 
-from .constants import COLOR_MAP, TEXT_COLOR_MAP, DARK_STYLESHEET, LIGHT_STYLESHEET, MAX_MONITOR_LINES
+from .constants import (
+    COLOR_MAP,
+    TEXT_COLOR_MAP,
+    DARK_STYLESHEET,
+    LIGHT_STYLESHEET,
+    MAX_MONITOR_LINES,
+    MONITOR_TRIM_BATCH,
+)
 from .workers import AdbWorker, FileLoadWorker, FilterWorker
 from .models import LogModel
 from .dialogs import FindDialog, FilterDialog
@@ -749,12 +756,19 @@ class LogAnalysisMainWindow(QMainWindow):
         if not self.runtime.is_monitoring:
             return False
 
+        trim_batch = getattr(self, "monitor_trim_batch", None)
+        if trim_batch is None:
+            trim_batch = min(MONITOR_TRIM_BATCH, max(1, MAX_MONITOR_LINES // 10))
+
         excess_lines = len(self.log_model.all_lines) - MAX_MONITOR_LINES
-        if excess_lines <= 0:
+        if excess_lines < trim_batch:
             return False
 
         self._invalidate_filter_results()
-        self.log_model.set_lines(self.log_model.all_lines[excess_lines:])
+        self.log_model.set_lines(
+            self.log_model.all_lines[excess_lines:],
+            longest_line_text=self.log_model.longest_line_text,
+        )
         self._update_log_column_width()
         if preserve_bottom:
             self.runtime.scroll_to_bottom_after_refilter = True
@@ -1271,7 +1285,7 @@ class LogAnalysisMainWindow(QMainWindow):
 
         self._update_file_load_progress_ui(file_path, bytes_read, total_bytes, line_count)
 
-    def on_file_loaded(self, request_id, file_path, lines):
+    def on_file_loaded(self, request_id, file_path, lines, longest_line_text=None):
         if request_id != self.runtime.file_load_request_id:
             return
 
@@ -1281,7 +1295,7 @@ class LogAnalysisMainWindow(QMainWindow):
         self._finish_file_load_ui()
         self.runtime.loaded_file_path = file_path
         self._update_loaded_file_label()
-        self.log_model.set_lines(lines)
+        self.log_model.set_lines(lines, longest_line_text=longest_line_text)
         self._update_log_column_width()
         self.update_stats()
         self.runtime.pending_status_message = f"Loaded: {file_path} ({len(lines):,} lines)"

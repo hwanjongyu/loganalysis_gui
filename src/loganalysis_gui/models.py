@@ -202,7 +202,7 @@ class LogModel(QAbstractListModel):
 
         return None
 
-    def set_lines(self, lines):
+    def set_lines(self, lines, longest_line_text=None):
         self.beginResetModel()
         self.invalidate_filter_cache()
         self.all_lines = lines
@@ -211,7 +211,11 @@ class LogModel(QAbstractListModel):
         self.longest_line_text = ""
         self.visible_max_line_length = 0
         self.visible_longest_line_text = ""
-        self._update_longest_line(lines)
+        if longest_line_text is not None:
+            self.longest_line_text = self._measured_text(longest_line_text)
+            self.max_line_length = len(self.longest_line_text)
+        else:
+            self._update_longest_line(lines)
         self.visible_max_line_length = self.max_line_length
         self.visible_longest_line_text = self.longest_line_text
         self.endResetModel()

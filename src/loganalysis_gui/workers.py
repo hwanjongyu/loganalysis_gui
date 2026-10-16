@@ -7,7 +7,7 @@ from .models import measured_log_line_text
 
 class FileLoadWorker(QThread):
     progress_updated = pyqtSignal(int, str, int, int, int)
-    finished_loading = pyqtSignal(int, str, list)
+    finished_loading = pyqtSignal(int, str, list, str)
     load_failed = pyqtSignal(int, str, str)
 
     def __init__(self, file_path, request_id, *, chunk_size=262144, progress_step=1048576):
@@ -31,11 +31,13 @@ class FileLoadWorker(QThread):
                     0,
                     0,
                 )
-                self.finished_loading.emit(self.request_id, self.file_path, [])
+                self.finished_loading.emit(self.request_id, self.file_path, [], "")
                 return
 
             bytes_read = 0
             next_progress_bytes = 0
+            longest_line_text = ""
+            max_line_len = 0
 
             with open(self.file_path, "rb") as handle:
                 while self.is_running:
@@ -45,6 +47,13 @@ class FileLoadWorker(QThread):
 
                     bytes_read += len(line_bytes)
                     lines.append(line_bytes)
+
+                    if len(line_bytes) > max_line_len:
+                        line_str = line_bytes.decode("utf-8", errors="replace")
+                        measured = measured_log_line_text(line_str)
+                        if len(measured) > max_line_len:
+                            max_line_len = len(measured)
+                            longest_line_text = measured
 
                     if bytes_read >= next_progress_bytes:
                         self.progress_updated.emit(
@@ -66,7 +75,7 @@ class FileLoadWorker(QThread):
                 total_bytes,
                 len(lines),
             )
-            self.finished_loading.emit(self.request_id, self.file_path, lines)
+            self.finished_loading.emit(self.request_id, self.file_path, lines, longest_line_text)
         except FileNotFoundError:
             self.load_failed.emit(self.request_id, self.file_path, "File not found.")
         except OSError as error:

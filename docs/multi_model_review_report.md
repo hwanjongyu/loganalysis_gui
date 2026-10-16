@@ -157,10 +157,10 @@ graph TD
 
 - [ ] **C1. Deconstruct `LogAnalysisMainWindow` God-Class:**
   Extract modular controllers: `FilterManager` (tab & JSON persistence), `AdbController` (process & streaming), `SearchController` (background find), and `LogViewController`.
-- [ ] **C2. Offload Longest Line Calculation to `FileLoadWorker`:**
-  Compute maximum line length off-thread in `FileLoadWorker` and pass it in `finished_loading` payload.
-- [ ] **C3. Hysteresis Live Buffer Trimming:**
-  Trim live buffers in batch blocks (e.g. 20,000 lines at 220,000 limit) and incrementally append visible indices instead of re-filtering the entire 200,000-line dataset on every chunk.
+- [x] **C2. Offload Longest Line Calculation to `FileLoadWorker`:**
+  Compute maximum line length off-thread in `FileLoadWorker` during file read loop (with byte length upper-bound short-circuit) and pass it in `finished_loading` payload to `LogModel.set_lines()`, bypassing synchronous GUI thread iteration.
+- [x] **C3. Hysteresis Live Buffer Trimming:**
+  Implemented `MONITOR_TRIM_BATCH` (20,000 lines). Trimming is only triggered when buffer exceeds `MAX_MONITOR_LINES + trim_batch`, batch-trimming excess lines and preserving offloaded longest line calculations to eliminate the continuous 200,000-line re-filtering thrash loop.
 - [ ] **C4. Separate Filter State from UI Widgets:**
   Remove UI widget references (`QListWidget`, `QLineEdit`) from `FilterTabState` in `window_state.py`.
 
