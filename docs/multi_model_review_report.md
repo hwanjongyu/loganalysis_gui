@@ -164,6 +164,17 @@ graph TD
 - [x] **C4. Separate Filter State from UI Widgets:**
   Separated pure domain data (`FilterTabData`) from UI widget references (`FilterTabWidgets`) in `window_state.py`, with `FilterTabState` compositing both for 100% backward compatibility.
 
+### Phase 4: High-Performance Concurrency & Virtualization (Post Phase 3) - COMPLETED
+
+- [x] **D1. Non-blocking Off-Thread Search (`SearchWorker`):**
+  Added `SearchWorker(QThread)` in `workers.py` and adaptive search dispatch in `SearchController` with `ASYNC_SEARCH_THRESHOLD = 5000`. Supports real-time progress, pattern cancellation, and forward/backward text/regex matching with zero GUI freezes.
+- [x] **D2. Filter-Style Precomputation Pipeline:**
+  Integrated `resolve_line_style()` into `FilterWorker` and `LogModel.update_visible_indices()`. Style colors are precomputed during filtering, allowing `LogModel.data()` to perform $O(1)$ direct array/cache lookups during scroll rendering with zero redundant regex evaluations.
+- [x] **D3. Asynchronous ADB Device Scanning (`AdbDeviceScanWorker`):**
+  Moved `adb devices` discovery out of the GUI thread into a non-blocking `AdbDeviceScanWorker(QThread)` with timeout handling and C++ object lifecycle safety guards.
+- [x] **D4. Decouple Viewport Presentation (`LogViewController`):**
+  Extracted `LogViewController` from `main_window.py` to own column width calculations, full-line display mode, font zooming, selection copying, and context menu logic.
+
 ---
 
 ## 5. Architectural Blueprint: Target Architecture

@@ -1,76 +1,134 @@
 # Project Architecture & Roles
 
-This document defines the roles and responsibilities of the key components within the `LogAnalysisGUI` project following the transition to a High-Performance Model/View Architecture.
-
-## 🏗️ Software Architecture Roles
-
-The application follows a **Model-View-Controller (modified)** pattern tailored for PyQt5.
-
-### 1. The Data Authority: `LogModel`
-**Role**: Single Source of Truth.
-**Responsibilities**:
-*   **Data Storage**: Holds the raw log lines (`all_lines`) in memory.
-*   **Visibility Logic**: Determines which lines are displayed based on `visible_indices`.
-*   **Formatting**: Provides data to the View (`DisplayRole`) and styling (`BackgroundRole`, `ForegroundRole`).
-*   **Thread Safety**: Acts as the synchronization point for data updates from workers.
-
-### 2. The Orchestrator: `LogAnalysisMainWindow`
-**Role**: Application Controller.
-**Responsibilities**:
-*   **Lifecycle Management**: Starts and stops the application, manages window state.
-*   **Worker Management**: Spawns, connects, and terminates background threads (`AdbWorker`, `FilterWorker`, `FileLoadWorker`).
-*   **Input Handling**: Captures user intent (Menu clicks, Filter toggles) and routes them to the Model.
-*   **Feedback**: Updates the `QStatusBar` and handles modal dialogs (`FilterDialog`).
-*   **State Composition**: Delegates filter-tab metadata and runtime controller flags to `window_state.py` so tab enable/modified/file-path state and monitoring/refilter state are grouped instead of spread across parallel lists and loose attributes.
-
-### 3. The Workhorses: `Background Threads`
-To ensure the UI remains frozen-free (60fps), heavy lifting is delegated to dedicated workers.
-
-*   **`FilterWorker` (QThread)**
-    *   **Role**: Search Engine.
-    *   **Responsibility**: Iterates through the full dataset (millions of lines) to verify Regex/String matches against active filters. Returns specific indices to show.
-    *   **Shared Rules**: Reuses the same `filter_engine` matching and include/exclude precedence rules as the live append and model styling paths so filter behavior stays consistent across threads.
-
-*   **`FileLoadWorker` (QThread)**
-    *   **Role**: File Ingestor.
-    *   **Responsibility**: Reads selected log files off the UI thread, emits incremental progress, and returns the full in-memory line list only after the file is fully loaded.
-    *   **UX Contract**: Keeps the previous log visible while a replacement file is loading and relies on request-id invalidation so stale load completions cannot overwrite newer user actions.
-    
-*   **`AdbWorker` (QThread)**
-    *   **Role**: Data Ingestor.
-    *   **Responsibility**: Manages the `adb logcat` subprocess. Buffers high-velocity stream data and emits batched chunks to the UI thread to prevent event-loop flooding.
-    *   **Retention Policy**: Live monitoring keeps only the most recent `MAX_MONITOR_LINES` entries in memory; older lines are trimmed and the current filter view is recalculated.
-
-### 4. The Presentation Layer: `QTreeView`
-**Role**: Virtualized Renderer.
-**Responsibilities**:
-*   **Virtualization**: Renders *only* the rows currently visible in the viewport.
-*   **Performance**: handling scroll events and painting text/colors requested by the `LogModel`.
+This document defines the roles, design patterns, and architectural responsibilities of the key components within the `LogAnalysisGUI` project following the Phase 1~4 architectural refactoring and performance modernization.
 
 ---
 
-## 🔄 Thread Ownership & State Flow
+## 🏗️ High-Level System Architecture
 
-The current implementation uses a strict ownership model to keep UI state coherent:
+The application adopts a **Decoupled Model-View-Controller (MVC) & Multi-Worker Architecture** tailored for PyQt5, delivering sub-millisecond UI latency across multi-million line log datasets.
 
-*   **UI thread owns mutable application state**: `LogModel`, filter tabs, enabled/disabled tab state, and status-bar messaging are all mutated from `LogAnalysisMainWindow`.
-*   **Window controller state is grouped by responsibility**: `FilterTabState` owns per-tab widgets/filters/metadata, and `MainWindowRuntimeState` owns monitoring, refiltering, pending chunk buffering, and request-id bookkeeping.
-*   **`FilterWorker` operates on a request token**: each refilter operation gets a monotonically increasing request id. Completed results are ignored unless they match the latest request, which prevents stale filter results from overwriting newer UI state after clear/open/close operations.
-*   **`FileLoadWorker` also operates on a request token**: opening a different file, clearing logs, starting monitoring, or closing the window invalidates earlier file-load completions before they can replace the current model.
-*   **Filter semantics are centralized**: filter matching, active-filter handling, and include/exclude precedence now live in `filter_engine.py` and are shared by `FilterWorker`, tooltips/colors in `LogModel`, and incremental live append filtering.
-*   **Live ADB chunks are buffered during refiltering**: while a `FilterWorker` recalculates visibility during monitoring, incoming `adb logcat` chunks are queued in `pending_chunks` and flushed only after the latest filter pass completes. This avoids dropping newly streamed lines when the worker publishes a snapshot.
-*   **`AdbWorker` owns subprocess I/O only**: the worker is responsible for `adb logcat` process management and batched chunk emission, but start/stop/wait decisions remain in the main window.
-*   **State resets invalidate in-flight work**: opening a new file, clearing logs, toggling monitoring, and closing the window invalidate previous filter requests before the model is reset.
+```mermaid
+graph TD
+    subgraph UI Layer (Qt Main Thread)
+        MW["LogAnalysisMainWindow<br/>(Lightweight Orchestrator & Signal Broker)"]
+        FM["FilterManager<br/>(Tabs, CRUD, Persistence)"]
+        AC["AdbController<br/>(Discovery & Lifecycle)"]
+        SC["SearchController<br/>(FindDialog & Navigation)"]
+        LVC["LogViewController<br/>(Viewport, Columns, Zoom, Menu)"]
+        LV["LogView (QTreeView / Virtual Delegate)"]
+    end
+
+    subgraph Domain Models & State
+        LM["LogModel<br/>(Snapshot Virtual Model & Color Cache)"]
+        FTD["FilterTabData<br/>(Pure Data Class, Decoupled)"]
+        FTW["FilterTabWidgets<br/>(Qt UI Widget References)"]
+        FTS["FilterTabState<br/>(Composition Wrapper)"]
+        FE["FilterEngine<br/>(Precomputed Styling & Regex Cache)"]
+    end
+
+    subgraph Background Asynchronous Workers (QThreads)
+        FLW["FileLoadWorker<br/>(Chunked Stream & Max Line Offload)"]
+        FW["FilterWorker<br/>(Visibility & Style Precomputation)"]
+        SW["SearchWorker<br/>(Off-Thread Text / Regex Scan)"]
+        AW["AdbWorker<br/>(Process Stream & Batch Buffer)"]
+        ADW["AdbDeviceScanWorker<br/>(Non-blocking 'adb devices')"]
+    end
+
+    MW --> FM
+    MW --> AC
+    MW --> SC
+    MW --> LVC
+    MW --> LV
+
+    FM --> FTS
+    FTS --> FTD
+    FTS --> FTW
+
+    LV --> LM
+    LM --> FE
+
+    LM -.->|Async Signal/Slot| FLW
+    LM -.->|Async Signal/Slot| FW
+    SC -.->|Async Signal/Slot| SW
+    AC -.->|Async Signal/Slot| AW
+    AC -.->|Async Signal/Slot| ADW
+```
 
 ---
 
-## 👥 Contributor Roles (Suggested)
+## 🏛️ Component Responsibilities
 
-As the project grows, these human roles define how we manage the repository.
+### 1. Presentation & Controller Layer (`UI Layer`)
 
-| Role | Responsibilities |
-| :--- | :--- |
-| **Maintainer / Architect** | • Defines the high-level roadmap.<br>• Approves changes to `LogModel` core logic.<br>• Manages the release pipeline (PyInstaller builds). |
-| **Feature Developer** | • Implements new features (e.g., "Search", "Go To Line") without blocking the UI thread.<br>• Adds new data sources (e.g., SSH, Serial Port). |
-| **QA / Tester** | • Validates performance with large files (1GB+).<br>• Verifies ADB stability on different platforms (Windows, Linux, macOS). |
-| **UI/UX Designer** | • Refines the color palettes (`COLOR_MAP`).<br>• Improves the filter management UI (Drag & Drop, Grouping). |
+*   **`LogAnalysisMainWindow` ([`main_window.py`](file:///home/drew/github/hwanjongyu/loganalysis_gui/src/loganalysis_gui/main_window.py))**
+    *   **Role**: Top-level application coordinator and signal broker.
+    *   **Responsibilities**: Manages main window layout, menu bar actions, status bar permanent indicators, central event filtering, and backward-compatible delegation to specialized controllers. Slimmed down from monolithic God-class (~1,700 lines) to clean orchestrator.
+    *   **Thread Safety**: Enforces worker tracking (`_track_worker`) and deterministic teardown join barriers (`_cleanup_all_workers`).
+
+*   **`FilterManager` ([`filter_manager.py`](file:///home/drew/github/hwanjongyu/loganalysis_gui/src/loganalysis_gui/filter_manager.py))**
+    *   **Role**: Filter tab lifecycle and persistence controller.
+    *   **Responsibilities**: Filter CRUD, drag-and-drop tab reordering, filter list item widget styling, in-place search filtering, and crash-resilient atomic JSON saving (`.tmp` -> `os.replace`).
+
+*   **`AdbController` ([`adb_controller.py`](file:///home/drew/github/hwanjongyu/loganalysis_gui/src/loganalysis_gui/adb_controller.py))**
+    *   **Role**: ADB device discovery and streaming controller.
+    *   **Responsibilities**: Asynchronous device list polling (`AdbDeviceScanWorker`), toolbar device selector integration, live logcat process lifecycle, and safe TOCTOU process teardown.
+
+*   **`SearchController` ([`search_controller.py`](file:///home/drew/github/hwanjongyu/loganalysis_gui/src/loganalysis_gui/search_controller.py))**
+    *   **Role**: Log search and navigation manager.
+    *   **Responsibilities**: `FindDialog` display/debouncing, adaptive search dispatch (inline fast-path for < 5,000 lines vs off-thread `SearchWorker` for massive logs), and selection centering.
+
+*   **`LogViewController` ([`log_view_controller.py`](file:///home/drew/github/hwanjongyu/loganalysis_gui/src/loganalysis_gui/log_view_controller.py))**
+    *   **Role**: Viewport presentation controller.
+    *   **Responsibilities**: Dynamic column width measurement via `QFontMetrics`, full-line display vs compact mode toggle, on-the-fly font zoom (`Ctrl +` / `Ctrl -`), selection clipboard copying, log context menu, and mode indicator badges.
+
+---
+
+### 2. Domain & State Layer (`Domain Models`)
+
+*   **`LogModel` ([`models.py`](file:///home/drew/github/hwanjongyu/loganalysis_gui/src/loganalysis_gui/models.py))**
+    *   **Role**: Single Source of Truth (`QAbstractListModel`).
+    *   **Responsibilities**: Holds log dataset (`all_lines`), manages mapped `visible_indices`, caches `visible_styles` for zero-overhead paint events, and bounds dynamic style evaluation in an LRU cache (capped at 10,000 items).
+
+*   **`FilterTabData` & `FilterTabState` ([`window_state.py`](file:///home/drew/github/hwanjongyu/loganalysis_gui/src/loganalysis_gui/window_state.py))**
+    *   **Role**: Pure domain state decoupled from Qt widgets.
+    *   **Responsibilities**: Separates pure data structures (`FilterTabData`: name, filter rules, enabled, modified, file path) from UI references (`FilterTabWidgets`), composited via `FilterTabState` for seamless backward compatibility.
+
+*   **`FilterEngine` ([`filter_engine.py`](file:///home/drew/github/hwanjongyu/loganalysis_gui/src/loganalysis_gui/filter_engine.py))**
+    *   **Role**: Regex compilation and rule evaluation core.
+    *   **Responsibilities**: Global regex cache (`get_compiled_regex`), filter matching logic, include/exclude priority resolution, and precomputed line styling (`resolve_line_style`).
+
+---
+
+### 3. Asynchronous Worker Threads (`QThreads`)
+
+All heavy I/O, regex parsing, and subprocess streaming are completely isolated from the Qt GUI event loop:
+
+*   **`FileLoadWorker`**: Buffered chunk streaming (safely reading files without kernel `SIGBUS` hazards), computing off-thread longest line lengths with upper-bound short-circuiting.
+*   **`FilterWorker`**: Evaluates regex/text rules against a snapshot of lines, computing `visible_indices` and precomputing `visible_styles` in a single pass to eliminate scroll-time regex re-evaluations.
+*   **`SearchWorker`**: Scans millions of lines off-thread for text or regex patterns in forward/backward direction with real-time progress updates and instant cancellation.
+*   **`AdbWorker`**: Streams `adb logcat` via validated device serials, buffering incoming lines and emitting batched chunks to avoid event-loop congestion.
+*   **`AdbDeviceScanWorker`**: Non-blocking `adb devices` scanner with 3.0s timeout, eliminating main-thread freezes when ADB daemon restarts.
+
+---
+
+## 🔄 Concurrency, Safety & Lifecycle Contracts
+
+1. **Deterministic Join Barriers**:
+   All background workers implement `stop()` and are waited on with explicit join timeouts (`wait(1000)`) during cancellation, window closure, or tab teardown, eliminating `SIGABRT` crashes on exit.
+2. **Immutable Snapshot Filtering**:
+   When launching a `FilterWorker` or `SearchWorker`, worker threads receive snapshot copies of lines (`all_lines[:]`) rather than references to mutable state, eliminating thread race conditions during live streaming.
+3. **Hysteresis Buffer Trimming**:
+   Live logcat buffers are trimmed in hysteresis batches (`MONITOR_TRIM_BATCH = 20,000` lines) once the buffer exceeds `MAX_MONITOR_LINES + trim_batch`, preventing the CPU-thrashing refilter loop on every single streamed line.
+4. **C++ Object Lifecycle Guards**:
+   Worker completion handlers and teardown loops wrap `isRunning()` queries in `try...except RuntimeError` guards to gracefully handle Qt C++ objects cleaned up via `deleteLater()`.
+
+---
+
+## 🧪 Verification & Test Suite
+
+The architecture is covered by **81 comprehensive unit tests** executing in under 26 seconds:
+- `test_main_window.py`: UI orchestration, tab manipulation, mock menus, and file load flows.
+- `test_workers.py`: Worker execution, progress emission, cancellation, timeout, and regex safety.
+- `test_search_controller.py`: Search dialog debounce, async/sync search dispatch, regex errors, and termination.
+- `test_log_view_controller.py`: Column metrics, full-line toggling, zoom level adjustment, and row selection.

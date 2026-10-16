@@ -46,10 +46,22 @@ The heart of LogAnalysisGUI is its powerful multi-layered filtering engine:
 
 ## 🏗️ Architecture
 
-The application follows a robust **threaded architecture** to ensure the main interface never freezes:
-- **LogModel**: The central source of truth, managing visibility and styling.
-- **FilterWorker**: Background thread that handles heavy regex computations.
-- **AdbWorker**: Manages the `adb` subprocess and buffers incoming streams for efficient UI updates.
+The application follows a decoupled **Model-View-Controller (MVC) & Multi-Worker Architecture** to ensure the main interface never freezes, even when processing millions of lines:
+
+- **Modular UI Controllers**:
+  - `LogAnalysisMainWindow`: Lightweight orchestrator and signal coordinator.
+  - `FilterManager`: Filter tabs lifecycle, drag-and-drop ordering, and atomic JSON persistence.
+  - `AdbController`: Device discovery and live logcat stream management.
+  - `SearchController`: Non-blocking pattern search and `FindDialog` interaction.
+  - `LogViewController`: Viewport column metrics, full-line display mode, zoom, and clipboard operations.
+- **LogModel & FilterEngine**: The single source of truth managing log rows, precomputed styling pipelines for $O(1)$ viewport painting, and bounded LRU style caches.
+- **Asynchronous Worker Threads (QThreads)**:
+  - `FileLoadWorker`: Buffered chunk streaming with off-thread longest line computation.
+  - `FilterWorker`: Off-thread regex filtering with simultaneous visible style precomputation.
+  - `SearchWorker`: Non-blocking pattern search across massive logs with real-time progress and cancellation.
+  - `AdbWorker`: Stream logcat subprocess with buffered chunk dispatch.
+  - `AdbDeviceScanWorker`: Background device scanner with timeout, preventing UI lockup during discovery.
+
 
 ---
 
