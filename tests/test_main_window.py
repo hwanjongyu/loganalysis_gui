@@ -703,6 +703,55 @@ class LogAnalysisMainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.log_model.get_line_text(1), "plain text")
         self.assertEqual(self.window.log_model.get_line_text(99), "")
 
+    def test_find_dialog_debounce_timer_triggers_highlight(self):
+        from loganalysis_gui.dialogs import FindDialog
+        dlg = FindDialog(self.window)
+        self.assertTrue(dlg._debounce_timer.isSingleShot())
+        self.assertEqual(dlg._debounce_timer.interval(), 250)
+
+        dlg.input_field.setText("search_term")
+        self.assertTrue(dlg._debounce_timer.isActive())
+
+        # Simulate timer expiry
+        dlg._emit_search_params()
+        self.assertEqual(self.window.log_model.search_query, "search_term")
+
+        # Closing stops timer
+        dlg.close()
+        self.assertFalse(dlg._debounce_timer.isActive())
+
+    def test_atomic_filter_saving_creates_valid_file_and_cleans_temp(self):
+        import tempfile
+        tab_state = self.tab_state(0)
+        tab_state.filters.append(make_filter("sample_filter"))
+        self.window.set_tab_modified(0, True)
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            target_file = tf.name
+
+        try:
+            self.window._do_save(0, target_file)
+            self.assertFalse(os.path.exists(f"{target_file}.tmp"))
+            self.assertTrue(os.path.exists(target_file))
+            with open(target_file, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            self.assertEqual(saved["filters"][0]["text"], "sample_filter")
+        finally:
+            if os.path.exists(target_file):
+                os.unlink(target_file)
+            if os.path.exists(f"{target_file}.tmp"):
+                os.unlink(f"{target_file}.tmp")
+
+    def test_active_worker_tracking_and_cleanup(self):
+        worker = Mock()
+        worker.isRunning.return_value = True
+        self.window._track_worker(worker)
+        self.assertIn(worker, self.window._active_workers)
+
+        self.window._cleanup_all_workers()
+        worker.stop.assert_called_once()
+        self.assertEqual(len(self.window._active_workers), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

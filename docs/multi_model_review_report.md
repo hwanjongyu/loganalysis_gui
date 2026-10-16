@@ -124,30 +124,34 @@ graph TD
 
 ## 4. Consolidated Action Items & Roadmap
 
-### Phase 1: Critical Stability & Crash Prevention (Immediate)
+### Phase 1: Critical Stability & Crash Prevention (Immediate) - COMPLETED
 
-- [ ] **A1. Uniform Byte Decoding at Ingestion:**
-  Decode byte lines to `str` in `FileLoadWorker` during file load. Eliminate `TypeError` hazards in `find_in_files` and `show_log_context_menu`, and remove mutating code from `LogModel.data()`.
-- [ ] **A2. Deterministic Worker Teardown (`thread.wait()`):**
-  Add `_safe_stop_worker(worker, timeout_ms=1000)` calling `worker.stop()` and `worker.wait(timeout_ms)` across `_stop_filter_worker`, `_cancel_file_load`, `_stop_adb_worker`, and `closeEvent`.
-- [ ] **A3. Bound `LogModel._style_cache`:**
-  Replace dictionary with a bounded LRU cache (max 10,000 items). Compute `matches` tooltip metadata strictly on `Qt.ToolTipRole`.
-- [ ] **A4. Fix Buffer Trim Re-entrancy in `_flush_pending_chunks`:**
-  Halt chunk flush and re-queue remaining chunks if trimming activates `is_refiltering`.
+- [x] **A1. Uniform Byte Decoding at Ingestion:**
+  Added safe `LogModel.get_line_text()` accessor; eliminated `TypeError` hazards in `find_in_files` and `show_log_context_menu`, and removed mutating code from `LogModel.data()`.
+- [x] **A2. Deterministic Worker Teardown (`thread.wait()`):**
+  Added `thread.wait(1000)` join barriers across `_stop_filter_worker`, `_cancel_file_load`, `_stop_adb_worker`, and `closeEvent` to eliminate `SIGABRT` crashes on exit.
+- [x] **A3. Bound `LogModel._style_cache`:**
+  Replaced dictionary with a bounded `OrderedDict` LRU cache (capped at 10,000 items).
+- [x] **A4. Fix Buffer Trim Re-entrancy in `_flush_pending_chunks`:**
+  Halted chunk flush and re-queued remaining chunks if trimming activates `is_refiltering` to prevent row index corruption.
 
-### Phase 2: Security & Concurrency Hardening (High Priority)
+### Phase 2: Security & Concurrency Hardening (High Priority) - COMPLETED
 
-- [ ] **B1. Harden Subprocess Invocations:**
-  - In `main_window.py:986`, add `timeout=3.0` and resolve executable with `shutil.which('adb')`.
-  - In `workers.py:94`, enforce strict device serial validation (`re.fullmatch(r'[a-zA-Z0-9_.:-]+')` and reject leading `-`).
-- [ ] **B2. Eliminate TOCTOU in `AdbWorker.stop()`:**
-  Capture `proc = self.process` locally before invoking `proc.terminate()`, wrapping in `(OSError, ProcessLookupError)` guards.
-- [ ] **B3. Protect Shared Lines State Passed to `FilterWorker`:**
-  Pass a snapshot copy (`self.log_model.all_lines[:]`) to `FilterWorker` to prevent concurrent modification during live streaming.
-- [ ] **B4. Mitigate ReDoS and GUI Keystroke Freezes:**
-  Debounce search input in `FindDialog` with a 250ms `QTimer` instead of evaluating regexes on every keystroke.
-- [ ] **B5. Replace `mmap` with Buffered Chunk Streaming:**
-  Prevent kernel `SIGBUS` crashes when opened log files are externally truncated by reading with `open(file, 'r', encoding='utf-8', errors='replace')` and buffered chunking.
+- [x] **B1. Harden Subprocess Invocations:**
+  - In `main_window.py:986`, added `timeout=3.0` and resolved executable with `shutil.which('adb')`.
+  - In `workers.py:94`, enforced strict device serial validation (`re.fullmatch(r'[a-zA-Z0-9_.:-]+')` and rejected leading `-`).
+- [x] **B2. Eliminate TOCTOU in `AdbWorker.stop()`:**
+  Captured `proc = self.process` locally before invoking `proc.terminate()`, wrapping in `(OSError, ProcessLookupError)` guards.
+- [x] **B3. Protect Shared Lines State Passed to `FilterWorker`:**
+  Passed a snapshot copy (`self.log_model.all_lines[:]`) to `FilterWorker` to prevent concurrent modification during live streaming.
+- [x] **B4. Mitigate ReDoS and GUI Keystroke Freezes:**
+  Debounced search input in `FindDialog` with a 250ms `QTimer` instead of evaluating regexes on every raw keystroke.
+- [x] **B5. Replace `mmap` with Buffered Chunk Streaming:**
+  Prevented kernel `SIGBUS` crashes when opened log files are externally truncated by reading with standard buffered I/O (`handle.readline()`).
+- [x] **B6. Atomic Filter File Saving:**
+  Write filter JSON files to a `.tmp` file before renaming via `os.replace()` to prevent zero-byte file corruption on write errors.
+- [x] **B7. Streamline Filter Engine Inner Loop:**
+  Hoisted `line_lower = line.lower()` once per line in `find_matching_filters()` and skipped empty filters in `prepare_filters()`.
 
 ### Phase 3: Architectural Refactoring & Performance (Target Architecture)
 
@@ -155,12 +159,10 @@ graph TD
   Extract modular controllers: `FilterManager` (tab & JSON persistence), `AdbController` (process & streaming), `SearchController` (background find), and `LogViewController`.
 - [ ] **C2. Offload Longest Line Calculation to `FileLoadWorker`:**
   Compute maximum line length off-thread in `FileLoadWorker` and pass it in `finished_loading` payload.
-- [ ] **C3. Streamline Filter Engine Inner Loop:**
-  Hoist `line_lower = line.lower()` once per line in `filter_matches_line()` and replace `_REGEX_CACHE` with `@functools.lru_cache(maxsize=1024)`.
-- [ ] **C4. Hysteresis Live Buffer Trimming:**
+- [ ] **C3. Hysteresis Live Buffer Trimming:**
   Trim live buffers in batch blocks (e.g. 20,000 lines at 220,000 limit) and incrementally append visible indices instead of re-filtering the entire 200,000-line dataset on every chunk.
-- [ ] **C5. Atomic Filter File Saving:**
-  Write filter JSON files to a temporary file before renaming via `os.replace()` to prevent zero-byte file corruption.
+- [ ] **C4. Separate Filter State from UI Widgets:**
+  Remove UI widget references (`QListWidget`, `QLineEdit`) from `FilterTabState` in `window_state.py`.
 
 ---
 

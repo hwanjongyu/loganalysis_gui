@@ -83,6 +83,23 @@ class FilterEngineTests(unittest.TestCase):
         self.assertIs(regex1, regex2)
         self.assertEqual(len(_REGEX_CACHE), 1)
 
+    def test_empty_filter_text_is_skipped_in_prepare_filters(self):
+        filters = [
+            make_filter("", active=True),
+            make_filter("valid", active=True),
+        ]
+        prepared = prepare_filters(filters)
+        self.assertEqual(len(prepared), 1)
+        self.assertEqual(prepared[0].filter_data["text"], "valid")
+
+    def test_hoisted_line_lower_matches_case_insensitive(self):
+        filter_data = make_filter("needle")
+        line = "Here is a NEEDLE in haystack\n"
+        line_lower = line.lower()
+        
+        self.assertTrue(filter_matches_line(line, filter_data, lowered_text="needle", line_lower=line_lower))
+        self.assertFalse(filter_matches_line(line, make_filter("other"), lowered_text="other", line_lower=line_lower))
+
 
 if __name__ == "__main__":
     unittest.main()

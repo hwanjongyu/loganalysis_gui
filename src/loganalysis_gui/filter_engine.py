@@ -30,7 +30,7 @@ class PreparedFilter:
 def prepare_filters(filters: Sequence[Dict[str, Any]]) -> List[PreparedFilter]:
     prepared_filters = []
     for index, filter_data in enumerate(filters):
-        if not filter_data.get("active", True):
+        if not filter_data.get("active", True) or not filter_data.get("text"):
             continue
 
         compiled_re = None
@@ -56,6 +56,7 @@ def filter_matches_line(
     filter_data: Dict[str, Any],
     compiled_re: Optional[Pattern[str]] = None,
     lowered_text: str = "",
+    line_lower: Optional[str] = None,
 ) -> bool:
     if filter_data["regex"]:
         regex = compiled_re
@@ -65,13 +66,19 @@ def filter_matches_line(
 
     if filter_data["case_sensitive"]:
         return filter_data["text"] in line
-    return (lowered_text or filter_data["text"].lower()) in line.lower()
+    haystack = line_lower if line_lower is not None else line.lower()
+    needle = lowered_text or filter_data["text"].lower()
+    return needle in haystack
 
 
 def find_matching_filters(
     line: str,
     prepared_filters: Sequence[PreparedFilter],
+    line_lower: Optional[str] = None,
 ) -> List[PreparedFilter]:
+    if line_lower is None and any(not f.compiled_re and not f.filter_data["case_sensitive"] for f in prepared_filters):
+        line_lower = line.lower()
+
     matches = []
     for prepared_filter in prepared_filters:
         if filter_matches_line(
@@ -79,6 +86,7 @@ def find_matching_filters(
             prepared_filter.filter_data,
             prepared_filter.compiled_re,
             prepared_filter.lowered_text,
+            line_lower=line_lower,
         ):
             matches.append(prepared_filter)
     return matches
@@ -88,11 +96,12 @@ def evaluate_line(
     line: str,
     prepared_filters: Sequence[PreparedFilter],
     show_only_filtered: bool,
+    line_lower: Optional[str] = None,
 ) -> Tuple[List[PreparedFilter], bool]:
     if not prepared_filters:
         return [], True
 
-    matches = find_matching_filters(line, prepared_filters)
+    matches = find_matching_filters(line, prepared_filters, line_lower=line_lower)
     if not matches:
         return [], not show_only_filtered
 

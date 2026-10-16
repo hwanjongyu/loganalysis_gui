@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QCheckBox, QLabel, QComboBox, QGroupBox, QFormLayout, QMessageBox
 )
 from PyQt5.QtGui import QColor, QPixmap, QIcon
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from .constants import COLOR_MAP, TEXT_COLOR_MAP
 
 class FindDialog(QDialog):
@@ -43,12 +43,21 @@ class FindDialog(QDialog):
         self.status_lbl.setStyleSheet("color: red")
         layout.addWidget(self.status_lbl)
 
+        # Debounce timer for real-time highlighting
+        self._debounce_timer = QTimer(self)
+        self._debounce_timer.setSingleShot(True)
+        self._debounce_timer.setInterval(250)
+        self._debounce_timer.timeout.connect(self._emit_search_params)
+
         # Signals for real-time highlighting
         self.input_field.textChanged.connect(self._on_search_params_changed)
         self.chk_case.toggled.connect(self._on_search_params_changed)
         self.chk_regex.toggled.connect(self._on_search_params_changed)
 
     def _on_search_params_changed(self):
+        self._debounce_timer.start()
+
+    def _emit_search_params(self):
         if hasattr(self.parent(), "update_search_highlights"):
             self.parent().update_search_highlights(
                 self.input_field.text(),
@@ -57,20 +66,26 @@ class FindDialog(QDialog):
             )
 
     def hideEvent(self, event):
+        self._debounce_timer.stop()
         if hasattr(self.parent(), "clear_search_highlights"):
             self.parent().clear_search_highlights()
         super().hideEvent(event)
 
     def closeEvent(self, event):
+        self._debounce_timer.stop()
         if hasattr(self.parent(), "clear_search_highlights"):
             self.parent().clear_search_highlights()
         super().closeEvent(event)
 
     def find_next(self):
+        self._debounce_timer.stop()
+        self._emit_search_params()
         self.parent().find_in_files(self.input_field.text(), forward=True, 
                                    case=self.chk_case.isChecked(), regex=self.chk_regex.isChecked())
 
     def find_prev(self):
+        self._debounce_timer.stop()
+        self._emit_search_params()
         self.parent().find_in_files(self.input_field.text(), forward=False, 
                                    case=self.chk_case.isChecked(), regex=self.chk_regex.isChecked())
     

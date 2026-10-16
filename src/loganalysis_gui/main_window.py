@@ -52,9 +52,20 @@ class LogAnalysisMainWindow(QMainWindow):
         self.filter_thread = None
         self.adb_thread = None
         self.file_load_thread = None
+        self._active_workers = set()
         self.runtime = MainWindowRuntimeState()
         
         self.find_dialog = None
+
+    def _track_worker(self, worker):
+        if not worker:
+            return
+        self._active_workers.add(worker)
+        if hasattr(worker, "finished"):
+            try:
+                worker.finished.connect(lambda: self._active_workers.discard(worker))
+            except (AttributeError, TypeError):
+                pass
 
     def create_menu(self):
         menubar = self.menuBar()
@@ -409,6 +420,7 @@ class LogAnalysisMainWindow(QMainWindow):
         self._update_file_load_progress_ui(file_path, 0, 0, 0)
 
         self.file_load_thread = FileLoadWorker(file_path, request_id)
+        self._track_worker(self.file_load_thread)
         self.file_load_thread.progress_updated.connect(self.on_file_load_progress)
         self.file_load_thread.finished_loading.connect(self.on_file_loaded)
         self.file_load_thread.load_failed.connect(self.on_file_load_failed)
@@ -869,12 +881,14 @@ class LogAnalysisMainWindow(QMainWindow):
                 index_obj = model.index(idx, 0)
                 self.log_view.setCurrentIndex(index_obj)
                 self.log_view.scrollTo(index_obj, QAbstractItemView.PositionAtCenter)
-                self.find_dialog.set_status("")
+                if self.find_dialog:
+                    self.find_dialog.set_status("")
                 return
             
             visited_count += 1
             
-        self.find_dialog.set_status("Not found")
+        if self.find_dialog:
+            self.find_dialog.set_status("Not found")
 
     def copy_selection(self):
         selection_model = self.log_view.selectionModel()
@@ -964,6 +978,7 @@ class LogAnalysisMainWindow(QMainWindow):
                 serial = self.device_selector.currentText()
 
             self.adb_thread = AdbWorker(device_serial=serial)
+            self._track_worker(self.adb_thread)
             self.adb_thread.chunk_ready.connect(self.on_adb_chunk)
             self.adb_thread.error_occurred.connect(self.on_adb_error)
             self.adb_thread.start()
@@ -1368,6 +1383,7 @@ class LogAnalysisMainWindow(QMainWindow):
             self._do_save(idx, file_path)
 
     def _do_save(self, idx, file_path):
+        temp_path = None
         try:
             tab_name = self.filter_tabs.tabText(idx)
             if tab_name.startswith("*"): tab_name = tab_name[1:]
@@ -1383,13 +1399,21 @@ class LogAnalysisMainWindow(QMainWindow):
                 "enabled": tab_state.enabled,
                 "filters": filters_to_save
             }
-            with open(file_path, 'w', encoding='utf-8') as f:
+            temp_path = f"{file_path}.tmp"
+            with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(temp_path, file_path)
+            temp_path = None
             
             tab_state.file_path = file_path
             self.set_tab_modified(idx, False)
             self.status_bar.showMessage(f"Filters from '{tab_name}' saved to {file_path}", 3000)
         except OSError as error:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
             self.status_bar.showMessage(f"Error saving filters: {error}", 5000)
 
     def load_filters(self):
@@ -1513,6 +1537,7 @@ class LogAnalysisMainWindow(QMainWindow):
             self.log_model.show_only_filtered,
             request_id
         )
+        self._track_worker(self.filter_thread)
         self.filter_thread.finished_filtering.connect(self.on_filtering_finished)
         self.filter_thread.filtering_failed.connect(self.on_filtering_failed)
         self.filter_thread.start()
@@ -1615,6 +1640,17 @@ class LogAnalysisMainWindow(QMainWindow):
         else:
             self.status_bar.showMessage(f"Refiltered complete.")
 
+    def _cleanup_all_workers(self):
+        self._cancel_file_load()
+        self._stop_filter_worker()
+        self._stop_adb_worker()
+        for worker in list(self._active_workers):
+            if hasattr(worker, "stop"):
+                worker.stop()
+            if hasattr(worker, "isRunning") and worker.isRunning():
+                worker.wait(1000)
+        self._active_workers.clear()
+
     def closeEvent(self, event):
         modified_tabs = []
         for i, tab_state in enumerate(self.filter_tab_states):
@@ -1641,21 +1677,15 @@ class LogAnalysisMainWindow(QMainWindow):
                         if self._tab_state(i).modified:
                             event.ignore()
                             return
-                self._cancel_file_load()
-                self._stop_filter_worker()
-                self._stop_adb_worker()
+                self._cleanup_all_workers()
                 event.accept()
             elif res == QMessageBox.Discard:
-                self._cancel_file_load()
-                self._stop_filter_worker()
-                self._stop_adb_worker()
+                self._cleanup_all_workers()
                 event.accept()
             else:
                 event.ignore()
         else:
-            self._cancel_file_load()
-            self._stop_filter_worker()
-            self._stop_adb_worker()
+            self._cleanup_all_workers()
             event.accept()
 
     def resizeEvent(self, event):

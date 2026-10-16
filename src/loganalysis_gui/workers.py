@@ -1,4 +1,3 @@
-import mmap
 import os
 import subprocess
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -39,24 +38,23 @@ class FileLoadWorker(QThread):
             next_progress_bytes = 0
 
             with open(self.file_path, "rb") as handle:
-                with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                    while self.is_running:
-                        line_bytes = mm.readline()
-                        if not line_bytes:
-                            break
+                while self.is_running:
+                    line_bytes = handle.readline()
+                    if not line_bytes:
+                        break
 
-                        bytes_read += len(line_bytes)
-                        lines.append(line_bytes)
+                    bytes_read += len(line_bytes)
+                    lines.append(line_bytes)
 
-                        if bytes_read >= next_progress_bytes:
-                            self.progress_updated.emit(
-                                self.request_id,
-                                self.file_path,
-                                bytes_read,
-                                total_bytes,
-                                len(lines),
-                            )
-                            next_progress_bytes = bytes_read + self.progress_step
+                    if bytes_read >= next_progress_bytes:
+                        self.progress_updated.emit(
+                            self.request_id,
+                            self.file_path,
+                            bytes_read,
+                            total_bytes,
+                            len(lines),
+                        )
+                        next_progress_bytes = bytes_read + self.progress_step
 
             if not self.is_running:
                 return
