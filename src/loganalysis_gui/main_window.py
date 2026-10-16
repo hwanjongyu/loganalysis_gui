@@ -28,12 +28,19 @@ from .models import LogModel
 from .dialogs import FindDialog, FilterDialog
 from .widgets import FilterItemWidget, describe_filter_text
 from .window_state import FilterTabState, MainWindowRuntimeState
+from .filter_manager import FilterManager
+from .adb_controller import AdbController
+from .search_controller import SearchController
 
 class LogAnalysisMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LogAnalysis (High Performance)")
         self.resize(1100, 800)
+
+        self.filter_manager = FilterManager(self)
+        self.adb_controller = AdbController(self)
+        self.search_controller = SearchController(self)
         
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -63,6 +70,14 @@ class LogAnalysisMainWindow(QMainWindow):
         self.runtime = MainWindowRuntimeState()
         
         self.find_dialog = None
+
+    @property
+    def filter_tab_states(self):
+        return self.filter_manager.filter_tab_states
+
+    @filter_tab_states.setter
+    def filter_tab_states(self, val):
+        self.filter_manager.filter_tab_states = val
 
     def _track_worker(self, worker):
         if not worker:
@@ -327,9 +342,7 @@ class LogAnalysisMainWindow(QMainWindow):
         self.runtime.is_refiltering = False
 
     def _reset_filter_counts(self):
-        for tab_state in self.filter_tab_states:
-            for filter_data in tab_state.filters:
-                filter_data["total_matches"] = 0
+        self.filter_manager.reset_filter_counts()
 
     def _update_loaded_file_label(self):
         file_path = self.runtime.loaded_file_path
@@ -434,92 +447,28 @@ class LogAnalysisMainWindow(QMainWindow):
         self.file_load_thread.start()
 
     def _stop_adb_worker(self):
-        thread = self.adb_thread
-        self.adb_thread = None
-        if thread:
-            thread.stop()
-            try:
-                thread.chunk_ready.disconnect()
-            except (TypeError, AttributeError):
-                pass
-            try:
-                thread.error_occurred.disconnect()
-            except (TypeError, AttributeError):
-                pass
-            if hasattr(thread, "isRunning") and thread.isRunning():
-                thread.wait(1000)
-            thread.finished.connect(thread.deleteLater)
+        self.adb_controller.stop_adb_worker()
 
     def _effective_model_filters(self):
-        effective_filters = []
-        for tab_state in self.filter_tab_states:
-            if not tab_state.enabled:
-                continue
-            effective_filters.extend(tab_state.filters)
-        return effective_filters
+        return self.filter_manager.effective_model_filters()
 
     def _regex_error(self, pattern, case_sensitive):
-        flags = 0 if case_sensitive else re.IGNORECASE
-        try:
-            re.compile(pattern, flags)
-        except re.error as error:
-            return str(error)
-        return None
+        return self.filter_manager.regex_error(pattern, case_sensitive)
 
     def _normalize_filter_data(self, filter_data):
-        normalized = {
-            "text": filter_data.get("text", ""),
-            "case_sensitive": filter_data.get("case_sensitive", False),
-            "regex": filter_data.get("regex", False),
-            "exclude": filter_data.get("exclude", False),
-            "bg_color": filter_data.get("bg_color", "None"),
-            "text_color": filter_data.get("text_color", "None"),
-            "active": filter_data.get("active", True),
-            "description": filter_data.get("description", ""),
-        }
-        if "total_matches" in filter_data:
-            normalized["total_matches"] = filter_data["total_matches"]
-        return normalized
+        return self.filter_manager.normalize_filter_data(filter_data)
 
     def _validate_loaded_filters(self, loaded_filters):
-        normalized_filters = []
-        invalid_filters = []
-
-        for raw_filter in loaded_filters:
-            if not isinstance(raw_filter, dict):
-                return None, ["Each filter entry must be an object."]
-
-            filter_data = self._normalize_filter_data(raw_filter)
-            if filter_data["regex"]:
-                regex_error = self._regex_error(filter_data["text"], filter_data["case_sensitive"])
-                if regex_error:
-                    invalid_filters.append(f"\"{filter_data['text']}\": {regex_error}")
-
-            normalized_filters.append(filter_data)
-
-        return normalized_filters, invalid_filters
+        return self.filter_manager.validate_loaded_filters(loaded_filters)
 
     def _tab_state(self, index):
-        if 0 <= index < len(self.filter_tab_states):
-            return self.filter_tab_states[index]
-        return None
+        return self.filter_manager.tab_state(index)
 
     def _current_tab_state(self):
-        return self._tab_state(self.filter_tabs.currentIndex())
+        return self.filter_manager.current_tab_state()
 
     def _refresh_tab_checkboxes(self):
-        tab_bar = self.filter_tabs.tabBar()
-        for index, tab_state in enumerate(self.filter_tab_states):
-            old_checkbox = tab_bar.tabButton(index, QTabBar.LeftSide)
-            if old_checkbox:
-                old_checkbox.deleteLater()
-            checkbox = QCheckBox()
-            checkbox.setProperty("tab_index", index)
-            checkbox.setChecked(tab_state.enabled)
-            checkbox.setToolTip("Enable/Disable this filter set")
-            checkbox.stateChanged.connect(self._on_tab_checkbox_changed)
-            tab_bar.setTabButton(index, QTabBar.LeftSide, checkbox)
-            tab_state.checkbox = checkbox
+        self.filter_manager.refresh_tab_checkboxes()
 
     def _create_mode_indicator(self, label, text, active, tooltip):
         label.setText(text)
@@ -577,112 +526,34 @@ class LogAnalysisMainWindow(QMainWindow):
         return any(normalized_query in text.lower() for text in haystacks)
 
     def _update_filter_item_visibility(self, tab_state, item):
-        filter_data = item.data(Qt.UserRole) or {}
-        item.setHidden(
-            not self._filter_matches_search(filter_data, tab_state.search_input.text())
-        )
+        self.filter_manager._update_filter_item_visibility(tab_state, item)
 
     def _apply_filter_search(self, tab_state):
-        for index in range(tab_state.filter_list.count()):
-            item = tab_state.filter_list.item(index)
-            self._update_filter_item_visibility(tab_state, item)
+        self.filter_manager.apply_filter_search(tab_state)
 
     def _build_filter_item(self, filter_data):
-        item = QListWidgetItem()
-        self.apply_filter_colors_to_list_item(item, filter_data)
-
-        widget = FilterItemWidget(filter_data)
-        widget.filter_toggled.connect(self._on_filter_toggled)
-        return item, widget
+        return self.filter_manager.build_filter_item(filter_data)
 
     def _insert_filter_item(self, tab_state, filter_data, row=None):
-        item, widget = self._build_filter_item(filter_data)
-
-        if row is None or row < 0 or row > tab_state.filter_list.count():
-            row = tab_state.filter_list.count()
-
-        tab_state.filter_list.insertItem(row, item)
-        tab_state.filters.insert(row, filter_data)
-        tab_state.filter_list.setItemWidget(item, widget)
-        self._update_filter_item_visibility(tab_state, item)
-        return item
+        return self.filter_manager.insert_filter_item(tab_state, filter_data, row)
 
     def _selected_filter_items(self, tab_state, target_item=None):
-        selected_items = tab_state.filter_list.selectedItems()
-        if target_item is not None and target_item not in selected_items:
-            tab_state.filter_list.clearSelection()
-            target_item.setSelected(True)
-            tab_state.filter_list.setCurrentItem(target_item)
-            selected_items = [target_item]
-        return selected_items
+        return self.filter_manager.selected_filter_items(tab_state, target_item)
 
     def _delete_filter_items(self, tab_state, items):
-        rows = sorted(
-            {tab_state.filter_list.row(item) for item in items if item is not None},
-            reverse=True,
-        )
-        if not rows:
-            return
-
-        for row in rows:
-            tab_state.filter_list.takeItem(row)
-            del tab_state.filters[row]
-
-        self.apply_filters()
-        self.set_tab_modified(self.filter_tabs.currentIndex(), True)
+        self.filter_manager.delete_filter_items(tab_state, items)
 
     def _duplicate_filter_item(self, tab_state, item):
-        row = tab_state.filter_list.row(item)
-        if row < 0 or row >= len(tab_state.filters):
-            return
-
-        duplicated_filter = self._normalize_filter_data(tab_state.filters[row])
-        duplicated_item = self._insert_filter_item(tab_state, duplicated_filter, row + 1)
-        tab_state.filter_list.setCurrentItem(duplicated_item)
-        duplicated_item.setSelected(True)
-        self.apply_filters()
-        self.set_tab_modified(self.filter_tabs.currentIndex(), True)
+        self.filter_manager.duplicate_filter_item(tab_state, item)
 
     def _copy_filter_pattern(self, tab_state, item):
-        row = tab_state.filter_list.row(item)
-        if row < 0 or row >= len(tab_state.filters):
-            return
-
-        QApplication.clipboard().setText(tab_state.filters[row]["text"])
-        self.status_bar.showMessage("Copied filter pattern to clipboard", 3000)
+        self.filter_manager.copy_filter_pattern(tab_state, item)
 
     def _show_filter_context_menu(self, tab_state, position):
-        item = tab_state.filter_list.itemAt(position)
-        if item is None:
-            return
-
-        selected_items = self._selected_filter_items(tab_state, item)
-        menu = QMenu(self)
-        edit_action = menu.addAction("Edit")
-        duplicate_action = menu.addAction("Duplicate")
-        delete_action = menu.addAction("Delete")
-        copy_action = menu.addAction("Copy Pattern")
-        chosen_action = menu.exec_(tab_state.filter_list.mapToGlobal(position))
-
-        if chosen_action == edit_action:
-            self.edit_filter_dialog(item)
-        elif chosen_action == duplicate_action:
-            self._duplicate_filter_item(tab_state, item)
-        elif chosen_action == delete_action:
-            self._delete_filter_items(tab_state, selected_items)
-        elif chosen_action == copy_action:
-            self._copy_filter_pattern(tab_state, item)
+        self.filter_manager.show_filter_context_menu(tab_state, position)
 
     def _on_tab_checkbox_changed(self, state):
-        checkbox = self.sender()
-        if not isinstance(checkbox, QCheckBox):
-            return
-
-        index = checkbox.property("tab_index")
-        if not isinstance(index, int):
-            return
-
-        self._on_tab_toggled(index, state)
+        self.filter_manager._on_tab_checkbox_changed(state)
 
     def _apply_chunk_to_model(self, lines):
         was_at_bottom = False
@@ -840,69 +711,10 @@ class LogAnalysisMainWindow(QMainWindow):
         self.lbl_stats.setText(f"Lines: {total} | Visible: {visible}")
 
     def show_find_dialog(self):
-        if not self.find_dialog:
-            self.find_dialog = FindDialog(self)
-        self.find_dialog.show()
-        self.find_dialog.raise_()
-        self.find_dialog.activateWindow()
+        self.search_controller.show_find_dialog()
 
     def find_in_files(self, text, forward=True, case=False, regex=False):
-        if not text:
-            return
-
-        if regex:
-            regex_error = self._regex_error(text, case)
-            if regex_error:
-                message = f"Invalid regex: {regex_error}"
-                if self.find_dialog:
-                    self.find_dialog.set_status(message)
-                self.status_bar.showMessage(message, 5000)
-                return
-            
-        model = self.log_model
-        visited_count = 0
-        total = model.rowCount()
-        if total == 0:
-            return
-
-        current_row = self.log_view.currentIndex().row()
-        if current_row < 0:
-            idx = -1 if forward else 0
-        else:
-            idx = current_row
-
-        while visited_count < total:
-            if forward:
-                idx = (idx + 1) % total
-            else:
-                idx = (idx - 1) % total
-            
-            real_idx = model.visible_indices[idx]
-            line = model.get_line_text(real_idx)
-            
-            match = False
-            if regex:
-                flags = 0 if case else re.IGNORECASE
-                if re.search(text, line, flags):
-                    match = True
-            else:
-                if case:
-                    if text in line: match = True
-                else:
-                    if text.lower() in line.lower(): match = True
-            
-            if match:
-                index_obj = model.index(idx, 0)
-                self.log_view.setCurrentIndex(index_obj)
-                self.log_view.scrollTo(index_obj, QAbstractItemView.PositionAtCenter)
-                if self.find_dialog:
-                    self.find_dialog.set_status("")
-                return
-            
-            visited_count += 1
-            
-        if self.find_dialog:
-            self.find_dialog.set_status("Not found")
+        self.search_controller.find_in_files(text, forward=forward, case=case, regex=regex)
 
     def copy_selection(self):
         selection_model = self.log_view.selectionModel()
@@ -976,90 +788,11 @@ class LogAnalysisMainWindow(QMainWindow):
         self.set_tab_modified(self.filter_tabs.currentIndex(), True)
 
     def toggle_adb_monitoring(self):
-        style = self.style()
-        if not self.runtime.is_monitoring:
-            self._cancel_file_load()
-            self._stop_filter_worker()
-            self._invalidate_filter_results()
-            self.runtime.loaded_file_path = None
-            self._update_loaded_file_label()
-            self.log_model.clear()
-            self.runtime.pending_chunks = []
-            self.log_model.filters = self._effective_model_filters()
-            
-            serial = None
-            if self.device_selector.isEnabled() and self.device_selector.currentText() not in ["No Devices Found", "ADB Not Found", "Scan Error"]:
-                serial = self.device_selector.currentText()
-
-            self.adb_thread = AdbWorker(device_serial=serial)
-            self._track_worker(self.adb_thread)
-            self.adb_thread.chunk_ready.connect(self.on_adb_chunk)
-            self.adb_thread.error_occurred.connect(self.on_adb_error)
-            self.adb_thread.start()
-            
-            self.runtime.is_monitoring = True
-            self.runtime.is_paused = False
-            self.adb_monitor_action.setText("Stop ADB Logcat")
-            self.adb_monitor_action.setIcon(style.standardIcon(QStyle.SP_MediaStop))
-            self.pause_action.setEnabled(True)
-            self.pause_action.setChecked(False)
-            if serial:
-                self.status_bar.showMessage(f"Monitoring ADB Device: {serial}...")
-            else:
-                self.status_bar.showMessage("Monitoring ADB Logcat...")
-        else:
-            self._stop_adb_worker()
-            self.runtime.is_monitoring = False
-            self.runtime.is_paused = False
-            self.runtime.is_refiltering = False
-            self.adb_monitor_action.setText("Start ADB Logcat")
-            self.adb_monitor_action.setIcon(style.standardIcon(QStyle.SP_ComputerIcon))
-            self.pause_action.setEnabled(False)
-            self.status_bar.showMessage(f"Monitoring stopped.")
-            self.update_stats()
-            self._flush_pending_chunks()
+        self.adb_controller.toggle_adb_monitoring()
 
     def refresh_adb_devices(self):
-        self.device_selector.clear()
-        try:
-            adb_bin = shutil.which('adb') or 'adb'
-            output = subprocess.check_output(
-                [adb_bin, 'devices'],
-                universal_newlines=True,
-                encoding='utf-8',
-                errors='replace',
-                timeout=3.0,
-            )
-            lines = output.strip().split('\n')
-            devices = []
-            for line in lines[1:]:
-                if not line.strip():
-                    continue
-                parts = line.split()
-                if len(parts) >= 2 and parts[1] == 'device':
-                    devices.append(parts[0])
-            
-            if devices:
-                self.device_selector.addItems(devices)
-                self.device_selector.setEnabled(True)
-                self.status_bar.showMessage(f"Found {len(devices)} ADB devices.", 3000)
-            else:
-                self.device_selector.addItem("No Devices Found")
-                self.device_selector.setEnabled(False)
-                self.status_bar.showMessage("No ADB devices connected.", 3000)
-        except subprocess.TimeoutExpired:
-            self.device_selector.addItem("ADB Timeout")
-            self.device_selector.setEnabled(False)
-            self.status_bar.showMessage("ADB device scan timed out.", 3000)
-        except FileNotFoundError:
-            self.device_selector.addItem("ADB Not Found")
-            self.device_selector.setEnabled(False)
-            self.status_bar.showMessage("ADB not found in system PATH.", 3000)
-        except Exception as e:
-            self.device_selector.addItem("Scan Error")
-            self.device_selector.setEnabled(False)
-            self.status_bar.showMessage(f"ADB device scan error: {e}", 3000)
-    
+        self.adb_controller.refresh_adb_devices()
+
     def clear_logs(self):
         self._cancel_file_load()
         self._stop_filter_worker()
@@ -1084,27 +817,16 @@ class LogAnalysisMainWindow(QMainWindow):
             self._flush_pending_chunks()
 
     def on_adb_chunk(self, lines):
-        if self.runtime.is_paused or self.runtime.is_refiltering:
-            self.runtime.pending_chunks.append(lines)
-            return
-
-        self._apply_chunk_to_model(lines)
+        self.adb_controller.on_adb_chunk(lines)
 
     def on_adb_error(self, message):
-        self.toggle_adb_monitoring() 
-        QMessageBox.critical(self, "ADB Error", message)
+        self.adb_controller.on_adb_error(message)
 
     def rename_filter_tab(self):
-        idx = self.filter_tabs.currentIndex()
-        self.rename_filter_tab_by_index(idx)
+        self.filter_manager.rename_filter_tab()
 
     def rename_filter_tab_by_index(self, idx):
-        if idx >= 0:
-            current_name = self.filter_tabs.tabText(idx)
-            new_name, ok = QInputDialog.getText(self, "Rename Tab", "Tab name:", text=current_name)
-            if ok and new_name.strip():
-                self.filter_tabs.setTabText(idx, new_name.strip())
-                self.set_tab_modified(idx, True)
+        self.filter_manager.rename_filter_tab_by_index(idx)
 
     def show_about_dialog(self):
         QMessageBox.about(self, "About LogAnalysis GUI",
@@ -1129,99 +851,22 @@ class LogAnalysisMainWindow(QMainWindow):
                                 )
 
     def add_filter_tab(self):
-        filter_list = QListWidget()
-        filter_list.setDragDropMode(QListWidget.InternalMove)
-        filter_list.setAlternatingRowColors(True)
-        filter_list.itemDoubleClicked.connect(self.edit_filter_dialog)
-        filter_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        filter_list.installEventFilter(self)
-        filter_list.model().rowsMoved.connect(lambda: self.sync_filter_order())
-
-        search_input = QLineEdit()
-        search_input.setPlaceholderText("Search filters in this tab...")
-
-        tab_widget = QWidget()
-        tab_layout = QVBoxLayout(tab_widget)
-        tab_layout.setContentsMargins(0, 0, 0, 0)
-        tab_layout.setSpacing(6)
-        tab_layout.addWidget(search_input)
-        tab_layout.addWidget(filter_list)
-
-        tab_state = FilterTabState(
-            tab_widget=tab_widget,
-            filter_list=filter_list,
-            search_input=search_input,
-        )
-        self.filter_tab_states.append(tab_state)
-
-        search_input.textChanged.connect(lambda _text, state=tab_state: self._apply_filter_search(state))
-        filter_list.customContextMenuRequested.connect(
-            lambda position, state=tab_state: self._show_filter_context_menu(state, position)
-        )
-        
-        idx = len(self.filter_tab_states) - 1
-        self.filter_tabs.addTab(tab_widget, f"Filter Set {idx+1}")
-        self._refresh_tab_checkboxes()
-        
-        self.filter_tabs.setCurrentIndex(idx)
+        self.filter_manager.add_filter_tab()
 
     def set_tab_modified(self, index, modified: bool):
-        tab_state = self._tab_state(index)
-        if tab_state is not None:
-            tab_state.modified = modified
-            current_text = self.filter_tabs.tabText(index)
-            if modified:
-                if not current_text.startswith("*"):
-                    self.filter_tabs.setTabText(index, "*" + current_text)
-            else:
-                if current_text.startswith("*"):
-                    self.filter_tabs.setTabText(index, current_text[1:])
+        self.filter_manager.set_tab_modified(index, modified)
 
     def _on_tab_toggled(self, index, state):
-        tab_state = self._tab_state(index)
-        if tab_state is None:
-            return
-
-        tab_state.enabled = (state == Qt.Checked)
-        self.set_tab_modified(index, True)
-        self.apply_filters()
+        self.filter_manager.on_tab_toggled(index, state)
 
     def sync_filter_order(self):
-        filter_list, filters = self.current_filter_list()
-        new_filters = []
-        for i in range(filter_list.count()):
-            item = filter_list.item(i)
-            filter_data_from_item = item.data(Qt.UserRole)
-            if filter_data_from_item:
-                new_filters.append(filter_data_from_item)
-        if len(new_filters) == len(filters):
-            filters.clear()
-            filters.extend(new_filters)
-            for i in range(filter_list.count()):
-                item = filter_list.item(i)
-                self.apply_filter_colors_to_list_item(item, filters[i])
-                widget = filter_list.itemWidget(item)
-                if not widget:
-                    widget = FilterItemWidget(filters[i])
-                    widget.filter_toggled.connect(self._on_filter_toggled)
-                    filter_list.setItemWidget(item, widget)
-        self.apply_filters()
-        self.set_tab_modified(self.filter_tabs.currentIndex(), True)
+        self.filter_manager.sync_filter_order()
 
     def delete_filter_tab(self):
-        idx = self.filter_tabs.currentIndex()
-        if len(self.filter_tab_states) > 1 and idx >= 0:
-            tab_state = self.filter_tab_states[idx]
-            self.filter_tabs.removeTab(idx)
-            del self.filter_tab_states[idx]
-            if tab_state.tab_widget:
-                tab_state.tab_widget.deleteLater()
-            self._refresh_tab_checkboxes()
-            self.apply_filters()
+        self.filter_manager.delete_filter_tab()
 
     def current_filter_list(self):
-        tab_state = self._current_tab_state()
-        return tab_state.filter_list, tab_state.filters
+        return self.filter_manager.current_filter_list()
 
     def toggle_line_numbers(self, checked):
         self.log_model.show_line_numbers = checked
@@ -1242,12 +887,7 @@ class LogAnalysisMainWindow(QMainWindow):
         self.apply_filters()
 
     def apply_filter_colors_to_list_item(self, item, filter_data):
-        bg_color = filter_data.get("bg_color", "None")
-        text_color = filter_data.get("text_color", "None")
-        if bg_color != "None":
-            item.setBackground(QColor(COLOR_MAP.get(bg_color, bg_color)))
-        if text_color != "None":
-            item.setForeground(QColor(TEXT_COLOR_MAP.get(text_color, text_color)))
+        self.filter_manager.apply_filter_colors_to_list_item(item, filter_data)
         item.setData(Qt.UserRole, filter_data)
 
     def open_file(self):
@@ -1371,143 +1011,16 @@ class LogAnalysisMainWindow(QMainWindow):
         return super().eventFilter(source, event)
 
     def save_filters(self):
-        idx = self.filter_tabs.currentIndex()
-        if idx < 0: return
-
-        tab_state = self._tab_state(idx)
-        if tab_state.file_path:
-            self._do_save(idx, tab_state.file_path)
-        else:
-            self.save_filters_as()
+        self.filter_manager.save_filters()
 
     def save_filters_as(self):
-        idx = self.filter_tabs.currentIndex()
-        if idx < 0: return
-        
-        tab_name = self.filter_tabs.tabText(idx)
-        if tab_name.startswith("*"): tab_name = tab_name[1:]
-        default_name = f"{tab_name}.json"
-        
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Current Tab Filters As", default_name, 
-            "JSON Files (*.json);;All Files (*)"
-        )
-        
-        if file_path:
-            self._do_save(idx, file_path)
+        self.filter_manager.save_filters_as()
 
     def _do_save(self, idx, file_path):
-        temp_path = None
-        try:
-            tab_name = self.filter_tabs.tabText(idx)
-            if tab_name.startswith("*"): tab_name = tab_name[1:]
-            
-            tab_state = self._tab_state(idx)
-            filters_to_save = []
-            for f in tab_state.filters:
-                f_copy = f.copy()
-                f_copy.pop("total_matches", None)
-                filters_to_save.append(f_copy)
-            data = {
-                "name": tab_name,
-                "enabled": tab_state.enabled,
-                "filters": filters_to_save
-            }
-            temp_path = f"{file_path}.tmp"
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(temp_path, file_path)
-            temp_path = None
-            
-            tab_state.file_path = file_path
-            self.set_tab_modified(idx, False)
-            self.status_bar.showMessage(f"Filters from '{tab_name}' saved to {file_path}", 3000)
-        except OSError as error:
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except OSError:
-                    pass
-            self.status_bar.showMessage(f"Error saving filters: {error}", 5000)
+        self.filter_manager.do_save(idx, file_path)
 
     def load_filters(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Filters to Current Tab", "", 
-            "JSON Files (*.json);;All Files (*)"
-        )
-        if file_path:
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    loaded = json.load(f)
-                
-                loaded_set = []
-                tab_name = None
-                tab_enabled = True
-                
-                if isinstance(loaded, dict):
-                    loaded_set = loaded.get('filters', [])
-                    tab_name = loaded.get('name')
-                    tab_enabled = loaded.get('enabled', True)
-                elif isinstance(loaded, list):
-                    if len(loaded) > 0 and isinstance(loaded[0], dict) and 'filters' in loaded[0]:
-                        loaded_set = loaded[0]['filters']
-                        tab_name = loaded[0].get('name')
-                    else:
-                        loaded_set = loaded
-                
-                if not loaded_set and not isinstance(loaded_set, list):
-                    self.status_bar.showMessage("Invalid filter file format.")
-                    return
-
-                normalized_filters, invalid_filters = self._validate_loaded_filters(loaded_set)
-                if normalized_filters is None:
-                    self.status_bar.showMessage("Invalid filter file format.")
-                    QMessageBox.warning(self, "Invalid Filter File", invalid_filters[0])
-                    return
-                if invalid_filters:
-                    details = "\n".join(f"- {item}" for item in invalid_filters[:5])
-                    if len(invalid_filters) > 5:
-                        details += "\n- ..."
-                    QMessageBox.warning(
-                        self,
-                        "Invalid Filter File",
-                        f"Cannot load filters with invalid regular expressions:\n\n{details}",
-                    )
-                    self.status_bar.showMessage("Error loading filters: invalid regex in file.", 5000)
-                    return
-
-                filter_list, filters = self.current_filter_list()
-                filter_list.clear()
-                filters.clear()
-                 
-                idx = self.filter_tabs.currentIndex()
-                tab_state = self._tab_state(idx)
-                if tab_name:
-                    self.filter_tabs.setTabText(idx, tab_name)
-                
-                tab_state.enabled = tab_enabled
-                cb = tab_state.checkbox
-                if isinstance(cb, QCheckBox):
-                    cb.blockSignals(True)
-                    cb.setChecked(tab_enabled)
-                    cb.blockSignals(False)
-
-                for filter_data in normalized_filters:
-                    self._insert_filter_item(tab_state, filter_data)
-                 
-                self.apply_filters()
-                tab_state.file_path = file_path
-                self.set_tab_modified(idx, False)
-                self.status_bar.showMessage(f"Filters loaded into current tab from {file_path}")
-            except json.JSONDecodeError:
-                QMessageBox.warning(
-                    self,
-                    "Invalid Filter File",
-                    "Cannot load filters: the selected file is not valid JSON.",
-                )
-                self.status_bar.showMessage("Error loading filters: invalid JSON file.", 5000)
-            except OSError as error:
-                self.status_bar.showMessage(f"Error loading filters: {error}", 5000)
+        self.filter_manager.load_filters()
 
     def apply_filters(self):
         self.log_model.filters = self._effective_model_filters()
@@ -1627,17 +1140,7 @@ class LogAnalysisMainWindow(QMainWindow):
         self._flush_pending_chunks()
 
     def update_filter_counts_ui(self):
-        current_tab_state = self._current_tab_state()
-        if current_tab_state is not None:
-            current_list = current_tab_state.filter_list
-            current_filters = current_tab_state.filters
-
-            for i in range(current_list.count()):
-                item = current_list.item(i)
-                widget = current_list.itemWidget(item)
-                if widget and i < len(current_filters):
-                    widget.filter_data['total_matches'] = current_filters[i].get('total_matches', 0)
-                    widget.update_display()
+        self.filter_manager.update_filter_counts_ui()
         
         if self.runtime.is_monitoring:
             if self.runtime.is_paused:
